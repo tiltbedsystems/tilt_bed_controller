@@ -1,0 +1,6 @@
+{
+  "sdkRoot" : "C:/Users/adunc/.silabs/slt/installs/conan/p/simpl508ee6c1a6569/p/",
+  "apackRoot" : "C:\\Users\\adunc\\.silabs\\slt\\installs\\conan\\p\\simpl508ee6c1a6569\\p\\bluetooth_bgbuild",
+  "partOpn" : "bgm220sc22hna",
+  "boards" : "brd4002arevA07"
+}

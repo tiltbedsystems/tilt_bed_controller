@@ -1,0 +1,21 @@
+# CMake build output
+/cmake_gcc/build/
+/build/
+/artifact/
+/artifacts/
+
+# Compiled/linked build artifacts anywhere in the tree
+*.o
+*.d
+*.map
+*.bin
+*.hex
+*.axf
+*.out
+*.su
+*.elf
+
+# OS cruft
+.DS_Store
+Thumbs.db
+desktop.ini
