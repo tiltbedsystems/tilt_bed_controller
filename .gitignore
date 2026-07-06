@@ -24,3 +24,6 @@ desktop.ini
 # tied to the local machine path; not a build input, not part of the
 # .slcp/pintool config record)
 /.uceditor/
+
+# Claude Code local session state
+/.claude/

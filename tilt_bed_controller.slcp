@@ -86,11 +86,42 @@ component:
   vendor: silabs
   id: gatt_service_device_information_override
 - package: simplicity_sdk
+  instance:
+  - off_board
+  - on_board
+  vendor: silabs
+  id: i2cspm
+- package: simplicity_sdk
+  instance:
+  - io_stream
+  vendor: silabs
+  id: iostream_usart
+- package: simplicity_sdk
   vendor: silabs
   id: mpu
 - package: simplicity_sdk
+  instance:
+  - motor1
+  - motor2
+  - motor3
+  - motor4
+  vendor: silabs
+  id: pwm
+- package: simplicity_sdk
   vendor: silabs
   id: rail_util_pti
+- package: simplicity_sdk
+  instance:
+  - fault_int
+  - local_button
+  - ui_int
+  vendor: silabs
+  id: simple_button
+- package: simplicity_sdk
+  instance:
+  - local_LED
+  vendor: silabs
+  id: simple_led
 - package: simplicity_sdk
   vendor: silabs
   id: sl_main
@@ -175,6 +206,9 @@ autoselected_components:
   id: bluetooth_version
 - package: simplicity_sdk
   vendor: silabs
+  id: button
+- package: simplicity_sdk
+  vendor: silabs
   id: clock_manager_init_hal_s2
 - package: simplicity_sdk
   vendor: silabs
@@ -226,6 +260,21 @@ autoselected_components:
   id: device_peripheral_hal
 - package: simplicity_sdk
   vendor: silabs
+  id: dma_channel
+- package: simplicity_sdk
+  vendor: silabs
+  id: dma_descriptor_allocator
+- package: simplicity_sdk
+  vendor: silabs
+  id: dma_manager
+- package: simplicity_sdk
+  vendor: silabs
+  id: dma_manager_hal_ldma
+- package: simplicity_sdk
+  vendor: silabs
+  id: dma_manager_init
+- package: simplicity_sdk
+  vendor: silabs
   id: ecode
 - package: simplicity_sdk
   vendor: silabs
@@ -250,6 +299,9 @@ autoselected_components:
   id: emlib_gpio
 - package: simplicity_sdk
   vendor: silabs
+  id: emlib_i2c
+- package: simplicity_sdk
+  vendor: silabs
   id: emlib_iadc
 - package: simplicity_sdk
   vendor: silabs
@@ -269,6 +321,9 @@ autoselected_components:
 - package: simplicity_sdk
   vendor: silabs
   id: emlib_timer
+- package: simplicity_sdk
+  vendor: silabs
+  id: emlib_usart
 - package: simplicity_sdk
   vendor: silabs
   id: enum
@@ -292,6 +347,9 @@ autoselected_components:
   id: hal_gpio
 - package: simplicity_sdk
   vendor: silabs
+  id: hal_i2c
+- package: simplicity_sdk
+  vendor: silabs
   id: hal_ldma
 - package: simplicity_sdk
   vendor: silabs
@@ -313,10 +371,28 @@ autoselected_components:
   id: hal_system_impl
 - package: simplicity_sdk
   vendor: silabs
+  id: i2c_core
+- package: simplicity_sdk
+  vendor: silabs
+  id: i2cspm_core
+- package: simplicity_sdk
+  vendor: silabs
   id: interrupt_manager
 - package: simplicity_sdk
   vendor: silabs
   id: interrupt_manager_cortexm
+- package: simplicity_sdk
+  vendor: silabs
+  id: iostream
+- package: simplicity_sdk
+  vendor: silabs
+  id: iostream_uart_common
+- package: simplicity_sdk
+  vendor: silabs
+  id: iostream_usart_core
+- package: simplicity_sdk
+  vendor: silabs
+  id: led
 - package: simplicity_sdk
   vendor: silabs
   id: libcryptosoc
@@ -457,6 +533,9 @@ autoselected_components:
   id: psa_vse_driver
 - package: simplicity_sdk
   vendor: silabs
+  id: pwm_core
+- package: simplicity_sdk
+  vendor: silabs
   id: rail_lib
 - package: simplicity_sdk
   vendor: silabs
@@ -493,6 +572,12 @@ autoselected_components:
   id: se_manager_mailbox_default
 - package: simplicity_sdk
   vendor: silabs
+  id: simple_button_core
+- package: simplicity_sdk
+  vendor: silabs
+  id: simple_led_core
+- package: simplicity_sdk
+  vendor: silabs
   id: sl_assert
 - package: simplicity_sdk
   vendor: silabs
@@ -521,6 +606,9 @@ autoselected_components:
 - package: simplicity_sdk
   vendor: silabs
   id: sl_rail_util_pti
+- package: simplicity_sdk
+  vendor: silabs
+  id: sl_string
 - package: simplicity_sdk
   vendor: silabs
   id: sleeptimer

@@ -10,7 +10,7 @@ referenced in this SBOM.)
 -->
 <bom xmlns="http://cyclonedx.org/schema/bom/1.6" version="1">
   <metadata>
-    <timestamp>2026-07-05T22:02:59Z</timestamp>
+    <timestamp>2026-07-06T03:24:28Z</timestamp>
     <authors>
       <author>
         <name>Silicon Laboratories, Inc.</name>
@@ -175,6 +175,26 @@ referenced in this SBOM.)
             <expression>Zlib</expression>
           </licenses>
         </component>
+        <component bom-ref="silabs.simplicity_sdk:2026.6.0:i2cspm" type="library">
+          <name>I2CSPM</name>
+          <version>2026.6.0</version>
+	      <supplier>
+	        <name>Silicon Laboratories, Inc.</name>
+	      </supplier>
+          <licenses>
+            <expression>Zlib</expression>
+          </licenses>
+        </component>
+        <component bom-ref="silabs.simplicity_sdk:2026.6.0:iostream_usart" type="library">
+          <name>IO Stream: USART</name>
+          <version>2026.6.0</version>
+	      <supplier>
+	        <name>Silicon Laboratories, Inc.</name>
+	      </supplier>
+          <licenses>
+            <expression>Zlib</expression>
+          </licenses>
+        </component>
         <component bom-ref="silabs.simplicity_sdk:2026.6.0:mpu" type="library">
           <name>Simple MPU</name>
           <version>2026.6.0</version>
@@ -185,8 +205,38 @@ referenced in this SBOM.)
             <expression>Zlib</expression>
           </licenses>
         </component>
+        <component bom-ref="silabs.simplicity_sdk:2026.6.0:pwm" type="library">
+          <name>PWM</name>
+          <version>2026.6.0</version>
+	      <supplier>
+	        <name>Silicon Laboratories, Inc.</name>
+	      </supplier>
+          <licenses>
+            <expression>Zlib</expression>
+          </licenses>
+        </component>
         <component bom-ref="silabs.simplicity_sdk:2026.6.0:rail_util_pti" type="library">
           <name>RAIL Utility, PTI (RAIL 2.x)</name>
+          <version>2026.6.0</version>
+	      <supplier>
+	        <name>Silicon Laboratories, Inc.</name>
+	      </supplier>
+          <licenses>
+            <expression>Zlib</expression>
+          </licenses>
+        </component>
+        <component bom-ref="silabs.simplicity_sdk:2026.6.0:simple_button" type="library">
+          <name>Simple Button</name>
+          <version>2026.6.0</version>
+	      <supplier>
+	        <name>Silicon Laboratories, Inc.</name>
+	      </supplier>
+          <licenses>
+            <expression>Zlib</expression>
+          </licenses>
+        </component>
+        <component bom-ref="silabs.simplicity_sdk:2026.6.0:simple_led" type="library">
+          <name>Simple LED</name>
           <version>2026.6.0</version>
 	      <supplier>
 	        <name>Silicon Laboratories, Inc.</name>
@@ -465,6 +515,16 @@ referenced in this SBOM.)
             <expression>MSLA</expression>
           </licenses>
         </component>
+        <component bom-ref="silabs.simplicity_sdk:2026.6.0:button" type="library">
+          <name>Generic Button API</name>
+          <version>2026.6.0</version>
+	      <supplier>
+	        <name>Silicon Laboratories, Inc.</name>
+	      </supplier>
+          <licenses>
+            <expression>Zlib</expression>
+          </licenses>
+        </component>
         <component bom-ref="silabs.simplicity_sdk:2026.6.0:clock_manager_init_hal_s2" type="library">
           <name>Clock Manager Init HAL Series 2</name>
           <version>2026.6.0</version>
@@ -655,6 +715,56 @@ referenced in this SBOM.)
             <expression>Zlib</expression>
           </licenses>
         </component>
+        <component bom-ref="silabs.simplicity_sdk:2026.6.0:dma_channel" type="library">
+          <name>DMA Channel Driver</name>
+          <version>2026.6.0</version>
+	      <supplier>
+	        <name>Silicon Laboratories, Inc.</name>
+	      </supplier>
+          <licenses>
+            <expression>Zlib</expression>
+          </licenses>
+        </component>
+        <component bom-ref="silabs.simplicity_sdk:2026.6.0:dma_descriptor_allocator" type="library">
+          <name>DMA Descriptor Allocator</name>
+          <version>2026.6.0</version>
+	      <supplier>
+	        <name>Silicon Laboratories, Inc.</name>
+	      </supplier>
+          <licenses>
+            <expression>Zlib</expression>
+          </licenses>
+        </component>
+        <component bom-ref="silabs.simplicity_sdk:2026.6.0:dma_manager" type="library">
+          <name>DMA Manager</name>
+          <version>2026.6.0</version>
+	      <supplier>
+	        <name>Silicon Laboratories, Inc.</name>
+	      </supplier>
+          <licenses>
+            <expression>Zlib</expression>
+          </licenses>
+        </component>
+        <component bom-ref="silabs.simplicity_sdk:2026.6.0:dma_manager_hal_ldma" type="library">
+          <name>DMA Manager HAL LDMA</name>
+          <version>2026.6.0</version>
+	      <supplier>
+	        <name>Silicon Laboratories, Inc.</name>
+	      </supplier>
+          <licenses>
+            <expression>Zlib</expression>
+          </licenses>
+        </component>
+        <component bom-ref="silabs.simplicity_sdk:2026.6.0:dma_manager_init" type="library">
+          <name>DMA Manager Init</name>
+          <version>2026.6.0</version>
+	      <supplier>
+	        <name>Silicon Laboratories, Inc.</name>
+	      </supplier>
+          <licenses>
+            <expression>Zlib</expression>
+          </licenses>
+        </component>
         <component bom-ref="silabs.simplicity_sdk:2026.6.0:ecode" type="library">
           <name>EMDRV Common Headers</name>
           <version>2026.6.0</version>
@@ -735,6 +845,16 @@ referenced in this SBOM.)
             <expression>Zlib</expression>
           </licenses>
         </component>
+        <component bom-ref="silabs.simplicity_sdk:2026.6.0:emlib_i2c" type="library">
+          <name>I2C</name>
+          <version>2026.6.0</version>
+	      <supplier>
+	        <name>Silicon Laboratories, Inc.</name>
+	      </supplier>
+          <licenses>
+            <expression>Zlib</expression>
+          </licenses>
+        </component>
         <component bom-ref="silabs.simplicity_sdk:2026.6.0:emlib_iadc" type="library">
           <name>IADC</name>
           <version>2026.6.0</version>
@@ -797,6 +917,16 @@ referenced in this SBOM.)
         </component>
         <component bom-ref="silabs.simplicity_sdk:2026.6.0:emlib_timer" type="library">
           <name>TIMER</name>
+          <version>2026.6.0</version>
+	      <supplier>
+	        <name>Silicon Laboratories, Inc.</name>
+	      </supplier>
+          <licenses>
+            <expression>Zlib</expression>
+          </licenses>
+        </component>
+        <component bom-ref="silabs.simplicity_sdk:2026.6.0:emlib_usart" type="library">
+          <name>USART</name>
           <version>2026.6.0</version>
 	      <supplier>
 	        <name>Silicon Laboratories, Inc.</name>
@@ -875,6 +1005,16 @@ referenced in this SBOM.)
             <expression>Zlib</expression>
           </licenses>
         </component>
+        <component bom-ref="silabs.simplicity_sdk:2026.6.0:hal_i2c" type="library">
+          <name>I2C</name>
+          <version>2026.6.0</version>
+	      <supplier>
+	        <name>Silicon Laboratories, Inc.</name>
+	      </supplier>
+          <licenses>
+            <expression>Zlib</expression>
+          </licenses>
+        </component>
         <component bom-ref="silabs.simplicity_sdk:2026.6.0:hal_ldma" type="library">
           <name>LDMA</name>
           <version>2026.6.0</version>
@@ -945,6 +1085,26 @@ referenced in this SBOM.)
             <expression>Zlib</expression>
           </licenses>
         </component>
+        <component bom-ref="silabs.simplicity_sdk:2026.6.0:i2c_core" type="library">
+          <name>I2C Core</name>
+          <version>2026.6.0</version>
+	      <supplier>
+	        <name>Silicon Laboratories, Inc.</name>
+	      </supplier>
+          <licenses>
+            <expression>Zlib</expression>
+          </licenses>
+        </component>
+        <component bom-ref="silabs.simplicity_sdk:2026.6.0:i2cspm_core" type="library">
+          <name>I2CSPM Core</name>
+          <version>2026.6.0</version>
+	      <supplier>
+	        <name>Silicon Laboratories, Inc.</name>
+	      </supplier>
+          <licenses>
+            <expression>Zlib</expression>
+          </licenses>
+        </component>
         <component bom-ref="silabs.simplicity_sdk:2026.6.0:interrupt_manager" type="library">
           <name>Interrupt Manager</name>
           <version>2026.6.0</version>
@@ -957,6 +1117,46 @@ referenced in this SBOM.)
         </component>
         <component bom-ref="silabs.simplicity_sdk:2026.6.0:interrupt_manager_cortexm" type="library">
           <name>Interrupt Manager Cortex-M</name>
+          <version>2026.6.0</version>
+	      <supplier>
+	        <name>Silicon Laboratories, Inc.</name>
+	      </supplier>
+          <licenses>
+            <expression>Zlib</expression>
+          </licenses>
+        </component>
+        <component bom-ref="silabs.simplicity_sdk:2026.6.0:iostream" type="library">
+          <name>IO Stream</name>
+          <version>2026.6.0</version>
+	      <supplier>
+	        <name>Silicon Laboratories, Inc.</name>
+	      </supplier>
+          <licenses>
+            <expression>Zlib</expression>
+          </licenses>
+        </component>
+        <component bom-ref="silabs.simplicity_sdk:2026.6.0:iostream_uart_common" type="library">
+          <name>IO Stream: Common code for UART-type streams</name>
+          <version>2026.6.0</version>
+	      <supplier>
+	        <name>Silicon Laboratories, Inc.</name>
+	      </supplier>
+          <licenses>
+            <expression>Zlib</expression>
+          </licenses>
+        </component>
+        <component bom-ref="silabs.simplicity_sdk:2026.6.0:iostream_usart_core" type="library">
+          <name>IO Stream: USART Core</name>
+          <version>2026.6.0</version>
+	      <supplier>
+	        <name>Silicon Laboratories, Inc.</name>
+	      </supplier>
+          <licenses>
+            <expression>Zlib</expression>
+          </licenses>
+        </component>
+        <component bom-ref="silabs.simplicity_sdk:2026.6.0:led" type="library">
+          <name>Generic LED API</name>
           <version>2026.6.0</version>
 	      <supplier>
 	        <name>Silicon Laboratories, Inc.</name>
@@ -1299,6 +1499,16 @@ referenced in this SBOM.)
             <expression>Zlib</expression>
           </licenses>
         </component>
+        <component bom-ref="silabs.simplicity_sdk:2026.6.0:pwm_core" type="library">
+          <name>PWM Core</name>
+          <version>2026.6.0</version>
+	      <supplier>
+	        <name>Silicon Laboratories, Inc.</name>
+	      </supplier>
+          <licenses>
+            <expression>Zlib</expression>
+          </licenses>
+        </component>
         <component bom-ref="silabs.simplicity_sdk:2026.6.0:rail_lib" type="library">
           <name>RAIL Library, Core</name>
           <version>2026.6.0</version>
@@ -1419,6 +1629,26 @@ referenced in this SBOM.)
             <expression>Zlib</expression>
           </licenses>
         </component>
+        <component bom-ref="silabs.simplicity_sdk:2026.6.0:simple_button_core" type="library">
+          <name>Simple Button Configuration</name>
+          <version>2026.6.0</version>
+	      <supplier>
+	        <name>Silicon Laboratories, Inc.</name>
+	      </supplier>
+          <licenses>
+            <expression>Zlib</expression>
+          </licenses>
+        </component>
+        <component bom-ref="silabs.simplicity_sdk:2026.6.0:simple_led_core" type="library">
+          <name>Simple LED Core</name>
+          <version>2026.6.0</version>
+	      <supplier>
+	        <name>Silicon Laboratories, Inc.</name>
+	      </supplier>
+          <licenses>
+            <expression>Zlib</expression>
+          </licenses>
+        </component>
         <component bom-ref="silabs.simplicity_sdk:2026.6.0:sl_assert" type="library">
           <name>Assert Functions</name>
           <version>2026.6.0</version>
@@ -1511,6 +1741,16 @@ referenced in this SBOM.)
         </component>
         <component bom-ref="silabs.simplicity_sdk:2026.6.0:sl_rail_util_pti" type="library">
           <name>RAIL Utility, PTI (RAIL 3)</name>
+          <version>2026.6.0</version>
+	      <supplier>
+	        <name>Silicon Laboratories, Inc.</name>
+	      </supplier>
+          <licenses>
+            <expression>Zlib</expression>
+          </licenses>
+        </component>
+        <component bom-ref="silabs.simplicity_sdk:2026.6.0:sl_string" type="library">
+          <name>String Functions</name>
           <version>2026.6.0</version>
 	      <supplier>
 	        <name>Silicon Laboratories, Inc.</name>

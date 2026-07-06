@@ -1,0 +1,16 @@
+target_sources(tilt_bed_controller PRIVATE
+	"../adc_currents.c"
+	"../auto_level.c"
+	"../bed_actions.c"
+	"../bed_control.c"
+	"../bed_settings.c"
+	"../bed_status.c"
+	"../dual_motor_control.c"
+	"../exp_board.c"
+	"../exp_ui.c"
+	"../mc3479.c"
+	"../motor_current_functions.c"
+	"../nvm3_functions.c"
+	"../settings_mode.c"
+	"../switch_input.c"
+)
