@@ -1,24 +1,58 @@
-# REGRESSION.md — bench regression checklist
+# REGRESSION_RECORD_D1.md — D1 migration bench test record
 
-Formal hardware checklist for the refactor phases in
-[REFACTOR_PLAN.md](REFACTOR_PLAN.md). Run the **full pass** at every phase
-boundary (end of Phase A, B, C) and after step B5 specifically. Items marked
-⚡ form the **smoke subset** for per-step verification between boundaries.
+Test record for the Phase 6 gate of the D1 SDK migration (DECISIONS #20):
+the full [REGRESSION.md](REGRESSION.md) pass run once against the migrated
+SiSDK 2026.6.0 firmware, before any BLE glue is written. This is a working
+copy to check boxes in during the bench run — REGRESSION.md itself stays
+unchecked, per its own instruction.
 
-Copy this file's checklist into the test record (or print it) per run —
-don't check boxes in the committed copy.
+Run the **smoke subset (⚡ items) first** as a fast sanity pass; if it's
+clean, continue with the full checklist below, including the §2b per-motor
+PWM check, which is one-time-only for this migration.
 
 ## Test record header
 
 | Field | Value |
 |---|---|
 | Date | |
-| Firmware version (`version.h`) | |
-| Git commit | |
+| Firmware version (`version.h`) | 1.1.0 |
+| Git commit | `1165ecf57f0e0cb3a02750329a661676c80c6c8e` |
 | Build config (Debug/Release) | |
 | Tester | |
 | Bed/frame unit | |
 | Notes (ambient, supply voltage) | |
+
+## Smoke subset (⚡) — run first
+
+- [ ] Welcome banner and version print on UART
+- [ ] "NVM3 initialized successfully" prints
+- [ ] Loaded Roll / Pitch / Raise / Lower values print and match expected
+      stored values
+- [ ] UP HEAD: A + D up, green LED, hold/release OK
+- [ ] DOWN HEAD: A + D down, green LED, hold/release OK
+- [ ] UP ALL: all four up, blue LED, hold/release OK
+- [ ] DOWN ALL: all four down, blue LED, hold/release OK
+- [ ] Quick-tap (<0.5 s) on one side button: motors pulse briefly and stop
+      cleanly; system accepts the next press normally
+- [ ] UP ALL until the first actuator reaches its limit: all motors pause
+      (~1.5 s temp-off), then the remaining motors resume; sequence ends
+      with all four at limit and all motors off
+- [ ] Raise one side into a rigid obstruction: motors stop, all LEDs blink
+      (3 cycles), motors briefly reverse starting at blink 2, then
+      everything stops and LEDs clear
+- [ ] After the collision sequence completes, normal button operation
+      resumes without power cycle
+- [ ] Hold AUTO_LEVEL: red LED blinks; ROLL levels first, then PITCH;
+      motors stop; green LED on; "Bed is level" prints
+- [ ] Hold BED_LIGHTS 5 s: amber LED fast-blinks — settings mode active
+- [ ] Persistence: power cycle; boot print shows the values stored earlier
+      in settings mode
+- [ ] Tap BED_LIGHTS: under-bed lighting on, amber LED on
+- [ ] End-of-run: all motors off, bed responds to a fresh button press
+
+If the smoke subset is clean, continue with the full pass below. If
+anything in the smoke subset fails, stop and report before continuing —
+no point running the full pass against a broken build.
 
 ## 0. Setup / preconditions
 
@@ -34,9 +68,9 @@ don't check boxes in the committed copy.
 
 ## 1. Power-on & initialization
 
-- [ ] ⚡ Welcome banner and version print on UART
-- [ ] ⚡ "NVM3 initialized successfully" prints
-- [ ] ⚡ Loaded Roll / Pitch / Raise / Lower values print and match expected
+- [ ] Welcome banner and version print on UART
+- [ ] "NVM3 initialized successfully" prints
+- [ ] Loaded Roll / Pitch / Raise / Lower values print and match expected
       stored values
 - [ ] "Accelerometer is sampling ..." prints
 - [ ] Expander-confirm LED sequence runs (red → green → blue → amber)
@@ -50,18 +84,18 @@ and the LED lights; release → motors stop, LED off. Watch the motor pair
 
 | # | Button | Expected motors | Direction | LED | Hold OK | Release OK |
 |---|---|---|---|---|---|---|
-| 2.1 ⚡ | UP HEAD | A + D | up | green | [ ] | [ ] |
+| 2.1 | UP HEAD | A + D | up | green | [ ] | [ ] |
 | 2.2 | UP LEFT | A + B | up | green | [ ] | [ ] |
 | 2.3 | UP RIGHT | C + D | up | green | [ ] | [ ] |
 | 2.4 | UP FOOT | B + C | up | green | [ ] | [ ] |
-| 2.5 ⚡ | DOWN HEAD | A + D | down | green | [ ] | [ ] |
+| 2.5 | DOWN HEAD | A + D | down | green | [ ] | [ ] |
 | 2.6 | DOWN LEFT | A + B | down | green | [ ] | [ ] |
 | 2.7 | DOWN RIGHT | C + D | down | green | [ ] | [ ] |
 | 2.8 | DOWN FOOT | B + C | down | green | [ ] | [ ] |
-| 2.9 ⚡ | UP ALL | all four | up | blue | [ ] | [ ] |
-| 2.10 ⚡ | DOWN ALL | all four | down | blue | [ ] | [ ] |
+| 2.9 | UP ALL | all four | up | blue | [ ] | [ ] |
+| 2.10 | DOWN ALL | all four | down | blue | [ ] | [ ] |
 
-- [ ] ⚡ Quick-tap (<0.5 s) on one side button: motors pulse briefly and stop
+- [ ] Quick-tap (<0.5 s) on one side button: motors pulse briefly and stop
       cleanly; system accepts the next press normally
 - [ ] Rapid repeated taps (5×) on one button: no stuck-on motors, no stuck LEDs
 - [ ] Press one button while another is already held: second press does not
@@ -69,8 +103,8 @@ and the LED lights; release → motors stop, LED off. Watch the motor pair
 
 ## 2b. Per-motor PWM timer mapping (D1 migration, DECISIONS #25) — one-time at D1
 
-Run once on the migrated firmware (and after any future PWM/timer config
-change). Verifies the new one-motor-per-timer mapping (TIMER0/1/2/3) is
+One-time check for this migration. Verifies the new one-motor-per-timer
+mapping (motor1→TIMER0, motor2→TIMER1, motor3→TIMER2, motor4→TIMER3) is
 wired to the correct physical actuators.
 
 - [ ] motor1 alone: UP then DOWN — correct actuator, correct direction,
@@ -94,7 +128,7 @@ wired to the correct physical actuators.
       motors stop within ~1 s of the actuator internal switch cutting current
 - [ ] Same side DOWN to lower limit: stops
 - [ ] After a limit stop, the opposite direction still works immediately
-- [ ] ⚡ UP ALL until the first actuator reaches its limit: all motors pause
+- [ ] UP ALL until the first actuator reaches its limit: all motors pause
       (~1.5 s temp-off), then the remaining motors resume; sequence ends with
       all four at limit and all motors off
 - [ ] DOWN ALL equivalent of the above
@@ -103,7 +137,7 @@ wired to the correct physical actuators.
 
 ## 5. Collision detection
 
-- [ ] ⚡ Raise one side into a rigid obstruction: motors stop, all LEDs blink
+- [ ] Raise one side into a rigid obstruction: motors stop, all LEDs blink
       (3 cycles), motors briefly reverse starting at blink 2, then everything
       stops and LEDs clear
 - [ ] Lower one side onto a rigid obstruction: same trip sequence
@@ -111,7 +145,7 @@ wired to the correct physical actuators.
       element (may take longer than rigid — confirm it does trip)
 - [ ] Collision during auto-level: motors stop, LED sequence runs
       (note: no reverse in auto-level — known limitation, REFACTOR_PLAN P1.5)
-- [ ] ⚡ After the collision sequence completes, normal button operation
+- [ ] After the collision sequence completes, normal button operation
       resumes without power cycle
 - [ ] Collision sensitivity sanity: at HIGH rung, the rigid-obstruction trip
       is noticeably faster/lighter than at LOW rung
@@ -123,7 +157,7 @@ wired to the correct physical actuators.
 Starting condition for 6.1: frame tilted several degrees in both roll and
 pitch, all actuators clear of limits.
 
-- [ ] ⚡ 6.1 Hold AUTO_LEVEL: red LED blinks; ROLL levels first, then PITCH;
+- [ ] 6.1 Hold AUTO_LEVEL: red LED blinks; ROLL levels first, then PITCH;
       motors stop; green LED on; "Bed is level" prints
 - [ ] 6.2 Verify with an independent level/inclinometer that the frame is
       actually level (within tolerance) after 6.1
@@ -140,7 +174,7 @@ pitch, all actuators clear of limits.
 
 ## 7. Settings mode
 
-- [ ] ⚡ 7.1 Hold BED_LIGHTS 5 s: amber LED fast-blinks — settings mode active
+- [ ] 7.1 Hold BED_LIGHTS 5 s: amber LED fast-blinks — settings mode active
 - [ ] 7.2 Zero-level store: hold AUTO_LEVEL; red LED on; after 2 s green LED
       on; UART prints stored ROLL/PITCH values
 - [ ] 7.3 Zero-level erase: keep holding AUTO_LEVEL 5 more s; blue LED on;
@@ -151,7 +185,7 @@ pitch, all actuators clear of limits.
 - [ ] 7.5 Sensitivity down: hold DOWN_ALL 2 s per step through all rungs
 - [ ] 7.6 Mismatch recovery: (if reproducible) mismatched raise/lower rungs
       force both to HIGH with green LED
-- [ ] ⚡ 7.7 Persistence: power cycle; boot print shows the values stored in
+- [ ] 7.7 Persistence: power cycle; boot print shows the values stored in
       7.2/7.4/7.5
 - [ ] 7.8 Motor buttons in settings mode do NOT move motors
 - [ ] 7.9 Exit: power cycle returns to normal mode (settings mode has no
@@ -159,7 +193,7 @@ pitch, all actuators clear of limits.
 
 ## 8. Bed lights
 
-- [ ] ⚡ Tap BED_LIGHTS: under-bed lighting on, amber LED on
+- [ ] Tap BED_LIGHTS: under-bed lighting on, amber LED on
 - [ ] Tap again: lighting off, amber LED off
 - [ ] Lights state survives a motor move and a collision sequence
       (amber restored after collision blink)
@@ -169,7 +203,7 @@ pitch, all actuators clear of limits.
 - [ ] No unexpected resets during the entire run (watch for repeated welcome
       banner)
 - [ ] No stuck LEDs at the end of any section
-- [ ] ⚡ End-of-run: all motors off, bed responds to a fresh button press
+- [ ] End-of-run: all motors off, bed responds to a fresh button press
 - [ ] Save the UART log with the test record
 
 ## Result
@@ -178,6 +212,7 @@ pitch, all actuators clear of limits.
 |---|---|---|
 | 1 Power-on | | |
 | 2 Manual control | | |
+| 2b Per-motor PWM | | |
 | 3 Double-press | | |
 | 4 Limit switches | | |
 | 5 Collision | | |

@@ -22,10 +22,15 @@ Following SDK_PORTING_GUIDE.md, gates in order:
 - [x] Phase 2 — stock "Bluetooth – SoC Empty" builds + flashes clean (Gate 2)
 - [x] Phase 4 (done before 3) — configurator components + pins fully
       entered per HARDWARE_CONFIG.md, verified against Pin Tool screenshot
-- [ ] Phase 3 — source port: `.c/.h` copy + the `app.c` merge (next step)
-- [ ] Phase 5 — compile-fix loop (Platform 4.2 → 5.x API renames)
+- [x] Phase 3 — source port: `.c/.h` copy + the `app.c` merge
+- [x] Phase 5 — compile-fix loop (Platform 4.2 → 5.x API renames). Clean
+      build confirmed (zero errors, zero warnings under `-Wall -Wextra`) at
+      commit `1165ecf`. Bounded semantic-drift check across sl_pwm, nvm3,
+      sl_sleeptimer, sl_i2cspm, sl_simple_button, and IADC init found no
+      behavioral drift versus the 4.2.2 baseline.
 - [ ] Phase 6 — **full REGRESSION.md pass on migrated firmware, BEFORE any
-      BLE glue** (this is the hard gate; DECISIONS #20)
+      BLE glue** (this is the hard gate; DECISIONS #20). Test record
+      prepped: `docs/REGRESSION_RECORD_D1.md`.
 
 Only after Phase 6 does actual BLE work (BLE_GATT_DESIGN.md) begin.
 
