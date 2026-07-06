@@ -107,7 +107,7 @@ static void start_temp_motor_off_oneshot_timer()
   *             |___|__                                                                 __|___|
   *                    |                     _____________________                     |
   *                    |________ [OUTPUT 0] |                     | [OUTPUT 3] ________|
-  *                                         |  TOTEM POWER BOARD  |
+  *                                         | TILT BED POWER BOARD|
   *                     ________ [OUTPUT 1] |_____________________| [OUTPUT 2] ________
   *              ^     |                                                               |     ^
   *             | |    |                                                               |    | |
