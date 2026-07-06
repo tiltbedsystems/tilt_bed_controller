@@ -8,6 +8,8 @@
 #ifndef AUTO_LEVEL_H_
 #define AUTO_LEVEL_H_
 
+#include <stdint.h>
+
 #include "bed_types.h"
 
 typedef struct {

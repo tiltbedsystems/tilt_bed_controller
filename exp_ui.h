@@ -8,6 +8,8 @@
 #ifndef EXP_UI_H_
 #define EXP_UI_H_
 
+#include <stdint.h>
+
 #define NUM_LEDS 4
 
 typedef enum {

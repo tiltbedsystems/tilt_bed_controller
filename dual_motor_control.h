@@ -8,6 +8,8 @@
 #ifndef DUAL_MOTOR_CONTROL_H_
 #define DUAL_MOTOR_CONTROL_H_
 
+#include <stdint.h>
+
 #include "bed_types.h"
 
 // Power board output assignments

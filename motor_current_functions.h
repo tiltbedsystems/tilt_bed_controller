@@ -8,6 +8,8 @@
 #ifndef MOTOR_CURRENT_FUNCTIONS_H_
 #define MOTOR_CURRENT_FUNCTIONS_H_
 
+#include <stdint.h>
+
 #include "dual_motor_control.h"
 
 extern bool motor_is_moving_stable[NUM_MOTORS];

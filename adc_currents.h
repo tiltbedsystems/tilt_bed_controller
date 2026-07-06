@@ -9,6 +9,8 @@
 #ifndef ADC_CURRENTS_H_
 #define ADC_CURRENTS_H_
 
+#include <stdint.h>
+
 // Initialize the Incremental Analog to Digital Converter (IADC)
 void initIADC (void);
 

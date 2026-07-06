@@ -8,6 +8,8 @@
 #ifndef NVM3_FUNCTIONS_H_
 #define NVM3_FUNCTIONS_H_
 
+#include <stdint.h>
+
 #include "nvm3_default.h"
 #include "nvm3_functions.h"
 

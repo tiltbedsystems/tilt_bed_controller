@@ -8,6 +8,8 @@
 #ifndef MC3479_H_
 #define MC3479_H_
 
+#include <stdint.h>
+
 typedef enum {
   MC3479_STATE_STANDBY,
   MC3479_STATE_WAKE
