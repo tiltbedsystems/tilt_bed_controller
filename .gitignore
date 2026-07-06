@@ -19,3 +19,8 @@
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Simplicity Studio local UI-editor cache (per-component canvas state,
+# tied to the local machine path; not a build input, not part of the
+# .slcp/pintool config record)
+/.uceditor/
