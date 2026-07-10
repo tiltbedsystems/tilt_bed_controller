@@ -382,11 +382,23 @@ void run_motor_supervision(active_switch_t sw, bool is_raising)
   scan_all_currents();
   check_motor_movement();
 
+  for (uint8_t i = 0; i < NUM_MOTORS; i++) {
+    motor_current_running_average(i);
+    max_load_check(i);
+    set_dynamic_collosion_threshold(i);
+    limit_switch_statuses(i, sw, auto_level_current_axis);
+    if (any_collision) {
+      break;
+    }
+  }
+
   /* --- DEBUG INSTRUMENTATION (SiSDK 2026.6 IADC migration bisection) ---
    * TODO: remove once the IADC "reads exactly 0" root cause is confirmed/
    * fixed on hardware. Only prints while a motor is actually commanded on
    * (idle current is 0 by design and tells us nothing), throttled so it
-   * doesn't flood the console at the ~1kHz supervision tick rate.
+   * doesn't flood the console at the ~1kHz supervision tick rate. Placed
+   * after the per-motor loop so filtered_current[]/average_current_single_
+   * reading[] reflect this tick's update, not the previous one.
    */
   {
     static uint16_t iadc_debug_divider = 0;
@@ -401,23 +413,18 @@ void run_motor_supervision(active_switch_t sw, bool is_raising)
       iadc_debug_divider = 0;
       uint32_t raw[NUM_MOTORS];
       get_iadc_raw_currents(raw);
-      printf("IADC_DBG irq=%lu fifo=%lu raw=[%lu,%lu,%lu,%lu] mA=[%lu,%lu,%lu,%lu] STATUS=0x%lx IEN=0x%lx IF=0x%lx NVICen=%d\r\n",
+      printf("IADC_DBG irq=%lu fifo=%lu ign=[%u,%u,%u,%u] raw=[%lu,%lu,%lu,%lu] latest_mA=[%lu,%lu,%lu,%lu] filt_mA=[%lu,%lu,%lu,%lu] avg_mA=[%u,%u,%u,%u] STATUS=0x%lx IEN=0x%lx IF=0x%lx NVICen=%d\r\n",
              (unsigned long)get_iadc_irq_count(), (unsigned long)get_iadc_last_fifo_cnt(),
+             ignore_data_points_count[0], ignore_data_points_count[1], ignore_data_points_count[2], ignore_data_points_count[3],
              (unsigned long)raw[0], (unsigned long)raw[1], (unsigned long)raw[2], (unsigned long)raw[3],
              (unsigned long)latest_motor_current[0], (unsigned long)latest_motor_current[1],
              (unsigned long)latest_motor_current[2], (unsigned long)latest_motor_current[3],
+             (unsigned long)filtered_current[0], (unsigned long)filtered_current[1],
+             (unsigned long)filtered_current[2], (unsigned long)filtered_current[3],
+             average_current_single_reading[0], average_current_single_reading[1],
+             average_current_single_reading[2], average_current_single_reading[3],
              (unsigned long)get_iadc_status_reg(), (unsigned long)get_iadc_ien_reg(), (unsigned long)get_iadc_if_reg(),
              (int)get_iadc_nvic_irq_enabled());
-    }
-  }
-
-  for (uint8_t i = 0; i < NUM_MOTORS; i++) {
-    motor_current_running_average(i);
-    max_load_check(i);
-    set_dynamic_collosion_threshold(i);
-    limit_switch_statuses(i, sw, auto_level_current_axis);
-    if (any_collision) {
-      break;
     }
   }
   if (motors_temp_off) {
