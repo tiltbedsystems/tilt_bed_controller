@@ -12,7 +12,6 @@
 
 //#include "em_device.h"
 //#include "em_chip.h"
-#include <stdbool.h>
 #include "em_cmu.h"
 #include "em_emu.h"
 #include "em_iadc.h"
@@ -70,14 +69,6 @@
  ******************************************************************************/
 
 static volatile uint32_t scanResult[NUM_INPUTS];  // IADC value converted to mA
-
-/* --- DEBUG INSTRUMENTATION (SiSDK 2026.6 IADC migration bisection) ---
- * TODO: remove once the IADC "reads exactly 0" root cause is confirmed/fixed
- * on hardware.
- */
-static volatile uint32_t iadc_irq_count = 0;         // Times IADC_IRQHandler has run
-static volatile uint32_t iadc_last_fifo_cnt = 0;      // Scan FIFO count seen on IRQ entry
-static volatile uint32_t iadc_raw_scan_result[NUM_INPUTS]; // Pre-scaling raw ADC codes
 
 /**************************************************************************//**
  * @brief  IADC Initializer
@@ -173,18 +164,11 @@ void IADC_IRQHandler(void)
 {
   IADC_Result_t result = {0, 0};
 
-  // DEBUG INSTRUMENTATION - see note above scanResult[] (TODO: remove)
-  iadc_irq_count++;
-  iadc_last_fifo_cnt = IADC_getScanFifoCnt(IADC0);
-
   // While the FIFO count is non-zero...
   while (IADC_getScanFifoCnt(IADC0))
   {
     // Pull a scan result from the FIFO
     result = IADC_pullScanFifoResult(IADC0);
-
-    // DEBUG INSTRUMENTATION - latch the pre-scaling raw code (TODO: remove)
-    iadc_raw_scan_result[result.id] = result.data;
 
     /*
      * Calculate the voltage to motor current conversion as follows:
@@ -225,46 +209,4 @@ void get_motor_currents(uint32_t *currents)
   currents[1] = scanResult[1];
   currents[2] = scanResult[2];
   currents[3] = scanResult[3];
-}
-
-/* --- DEBUG INSTRUMENTATION (SiSDK 2026.6 IADC migration bisection) ---
- * TODO: remove once the IADC "reads exactly 0" root cause is confirmed/fixed
- * on hardware.
- */
-uint32_t get_iadc_irq_count(void)
-{
-  return iadc_irq_count;
-}
-
-uint32_t get_iadc_last_fifo_cnt(void)
-{
-  return iadc_last_fifo_cnt;
-}
-
-void get_iadc_raw_currents(uint32_t *raw)
-{
-  raw[0] = iadc_raw_scan_result[0];
-  raw[1] = iadc_raw_scan_result[1];
-  raw[2] = iadc_raw_scan_result[2];
-  raw[3] = iadc_raw_scan_result[3];
-}
-
-uint32_t get_iadc_status_reg(void)
-{
-  return IADC0->STATUS;
-}
-
-uint32_t get_iadc_ien_reg(void)
-{
-  return IADC0->IEN;
-}
-
-uint32_t get_iadc_if_reg(void)
-{
-  return IADC0->IF;
-}
-
-bool get_iadc_nvic_irq_enabled(void)
-{
-  return (NVIC->ISER[IADC_IRQn >> 5] & (1UL << (IADC_IRQn & 0x1FUL))) != 0UL;
 }
