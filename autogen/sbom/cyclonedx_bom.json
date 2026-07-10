@@ -3,7 +3,7 @@
   "specVersion" : "1.6",
   "version" : 1,
   "metadata" : {
-    "timestamp" : "2026-07-06T03:24:28Z",
+    "timestamp" : "2026-07-10T03:47:51Z",
     "authors" : [ {
       "name" : "Silicon Laboratories, Inc."
     } ],
@@ -2233,6 +2233,18 @@
       "type" : "library",
       "bom-ref" : "silabs.simplicity_sdk:2026.6.0:udelay_cortexm",
       "name" : "Microsecond Delay Cortex-M",
+      "version" : "2026.6.0",
+      "supplier" : {
+        "name" : "Silicon Laboratories, Inc."
+      },
+      "licenses" : [ {
+        "expression" : "Zlib"
+      } ]
+    }, {
+      "scope" : "required",
+      "type" : "library",
+      "bom-ref" : "silabs.simplicity_sdk:2026.6.0:iostream_retarget_stdio",
+      "name" : "IO Stream: Retarget STDIO",
       "version" : "2026.6.0",
       "supplier" : {
         "name" : "Silicon Laboratories, Inc."

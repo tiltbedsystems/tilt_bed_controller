@@ -92,6 +92,9 @@ component:
   vendor: silabs
   id: i2cspm
 - package: simplicity_sdk
+  vendor: silabs
+  id: iostream_retarget_stdio
+- package: simplicity_sdk
   instance:
   - io_stream
   vendor: silabs

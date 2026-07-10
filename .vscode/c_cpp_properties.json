@@ -4,9 +4,9 @@
         {
             "name": "default_config",
             "includePath": [
-                "${workspaceFolder}/autogen",
                 "${workspaceFolder}/config",
                 "${workspaceFolder}/config/btconf",
+                "${workspaceFolder}/autogen",
                 "${workspaceFolder}/.",
                 "C:/Users/adunc/.silabs/slt/installs/conan/p/simpl508ee6c1a6569/p/platform_core/platform/Device/SiliconLabs/BGM22/Include",
                 "C:/Users/adunc/.silabs/slt/installs/conan/p/simpl508ee6c1a6569/p/platform_core/app/common/util/app_assert",

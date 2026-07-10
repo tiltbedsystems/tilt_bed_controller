@@ -13,7 +13,7 @@ DocumentNamespace: https://silabs.com
 
 ## Creation Information
 Creator: Organization: Silicon Laboratories, Inc.
-Created: 2026-07-06T03:24:28Z
+Created: 2026-07-10T03:47:51Z
 ## Relationships
 Relationship: SPDXRef-DOCUMENT DESCRIBES SPDXRef-silabs.simplicity_sdk-2026.6.0
 
@@ -207,6 +207,7 @@ Relationship: SPDXRef-silabs.simplicity_sdk-2026.6.0 CONTAINS SPDXRef-silabs.sim
 Relationship: SPDXRef-silabs.simplicity_sdk-2026.6.0 CONTAINS SPDXRef-silabs.simplicity_sdk-2026.6.0-trustzone_unaware
 Relationship: SPDXRef-silabs.simplicity_sdk-2026.6.0 CONTAINS SPDXRef-silabs.simplicity_sdk-2026.6.0-udelay
 Relationship: SPDXRef-silabs.simplicity_sdk-2026.6.0 CONTAINS SPDXRef-silabs.simplicity_sdk-2026.6.0-udelay_cortexm
+Relationship: SPDXRef-silabs.simplicity_sdk-2026.6.0 CONTAINS SPDXRef-silabs.simplicity_sdk-2026.6.0-iostream_retarget_stdio
 
 ## Package Information
 PackageName: BGM220SC22HNA
@@ -2237,3 +2238,14 @@ PackageSupplier: Organization: Silicon Laboratories, Inc.
 PackageLicenseConcluded: Zlib
 ## Relationships
 Relationship: SPDXRef-silabs.simplicity_sdk-2026.6.0-udelay_cortexm CONTAINED_BY SPDXRef-silabs.simplicity_sdk-2026.6.0
+
+## Package Information
+PackageName: IO Stream: Retarget STDIO
+SPDXID: SPDXRef-silabs.simplicity_sdk-2026.6.0-iostream_retarget_stdio
+PackageVersion: 2026.6.0
+PrimaryPackagePurpose: LIBRARY
+PackageDownloadLocation: NOASSERTION
+PackageSupplier: Organization: Silicon Laboratories, Inc.
+PackageLicenseConcluded: Zlib
+## Relationships
+Relationship: SPDXRef-silabs.simplicity_sdk-2026.6.0-iostream_retarget_stdio CONTAINED_BY SPDXRef-silabs.simplicity_sdk-2026.6.0
