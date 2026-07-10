@@ -403,13 +403,16 @@ void run_motor_supervision(active_switch_t sw, bool is_raising)
   {
     static uint16_t iadc_debug_divider = 0;
     bool any_motor_on = false;
+    bool any_gate_cleared = false; // ignore_data_points_count[i] has reached NUM_INITIAL_CURRENTS_IGNORED
     for (uint8_t i = 0; i < NUM_MOTORS; i++) {
       if (motor_state[i].motor_on) {
         any_motor_on = true;
-        break;
+        if (ignore_data_points_count[i] >= NUM_INITIAL_CURRENTS_IGNORED) {
+          any_gate_cleared = true;
+        }
       }
     }
-    if (any_motor_on && (++iadc_debug_divider >= 100)) {
+    if (any_motor_on && any_gate_cleared && (++iadc_debug_divider >= 20)) {
       iadc_debug_divider = 0;
       uint32_t raw[NUM_MOTORS];
       get_iadc_raw_currents(raw);
