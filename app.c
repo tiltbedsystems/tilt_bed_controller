@@ -42,6 +42,7 @@
 #include <stdio.h>
 #include <stdbool.h>
 
+#include "sl_component_catalog.h"
 #include "em_gpio.h"
 #include "pin_config.h"
 #include "sl_atomic.h"
@@ -477,6 +478,38 @@ void app_init(void)
  *** App ticking function
  *******************************************************************************
 *******************************************************************************/
+#if defined(SL_CATALOG_POWER_MANAGER_PRESENT)
+/***************************************************************************//**
+ * Power Manager sleep veto (SiSDK 2026.6 migration).
+ *
+ * The stock "Bluetooth - SoC Empty" base project pulls in the Power Manager
+ * component, whose sl_power_manager_sleep() call in main()'s super loop puts
+ * the CPU to sleep between iterations. The old Gecko SDK 4.2.2 project had no
+ * Power Manager, so its super loop free-spun and run_motor_supervision() ran
+ * back-to-back at the ~1 ms/tick cadence the current supervision is calibrated
+ * around (100-sample warmup; 350-sample dynamic threshold "occurs within
+ * 303ms"). Under Power Manager that cadence collapsed, slowing every
+ * current-based safety function equally: limit-switch inference (is_motor_
+ * moving), dynamic collision-threshold calibration, and collision response.
+ *
+ * Returning false here vetoes sleep - sl_power_manager_sleep() then returns
+ * without entering WFI, so the CPU stays in EM0 and the super loop free-spins,
+ * exactly as the pre-migration build did. Gated on a motor being energized so
+ * we only hold EM0 during a move; idle sleep is unaffected. Stateless (reads
+ * motor_state each call) so there is no add/remove requirement to keep paired.
+ * Overrides the SL_WEAK stub in autogen/sl_power_manager_handler.c.
+ ******************************************************************************/
+bool app_is_ok_to_sleep(void)
+{
+  for (uint8_t i = 0; i < NUM_MOTORS; i++) {
+    if (motor_state[i].motor_on) {
+      return false;  // A motor is running - keep the supervision loop fast.
+    }
+  }
+  return true;
+}
+#endif // SL_CATALOG_POWER_MANAGER_PRESENT
+
 void app_process_action(void)
 {
   bool local_heartbeat;
