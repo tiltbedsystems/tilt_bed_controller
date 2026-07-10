@@ -381,6 +381,36 @@ void run_motor_supervision(active_switch_t sw, bool is_raising)
 {
   scan_all_currents();
   check_motor_movement();
+
+  /* --- DEBUG INSTRUMENTATION (SiSDK 2026.6 IADC migration bisection) ---
+   * TODO: remove once the IADC "reads exactly 0" root cause is confirmed/
+   * fixed on hardware. Only prints while a motor is actually commanded on
+   * (idle current is 0 by design and tells us nothing), throttled so it
+   * doesn't flood the console at the ~1kHz supervision tick rate.
+   */
+  {
+    static uint16_t iadc_debug_divider = 0;
+    bool any_motor_on = false;
+    for (uint8_t i = 0; i < NUM_MOTORS; i++) {
+      if (motor_state[i].motor_on) {
+        any_motor_on = true;
+        break;
+      }
+    }
+    if (any_motor_on && (++iadc_debug_divider >= 100)) {
+      iadc_debug_divider = 0;
+      uint32_t raw[NUM_MOTORS];
+      get_iadc_raw_currents(raw);
+      printf("IADC_DBG irq=%lu fifo=%lu raw=[%lu,%lu,%lu,%lu] mA=[%lu,%lu,%lu,%lu] STATUS=0x%lx IEN=0x%lx IF=0x%lx NVICen=%d\r\n",
+             (unsigned long)get_iadc_irq_count(), (unsigned long)get_iadc_last_fifo_cnt(),
+             (unsigned long)raw[0], (unsigned long)raw[1], (unsigned long)raw[2], (unsigned long)raw[3],
+             (unsigned long)latest_motor_current[0], (unsigned long)latest_motor_current[1],
+             (unsigned long)latest_motor_current[2], (unsigned long)latest_motor_current[3],
+             (unsigned long)get_iadc_status_reg(), (unsigned long)get_iadc_ien_reg(), (unsigned long)get_iadc_if_reg(),
+             (int)get_iadc_nvic_irq_enabled());
+    }
+  }
+
   for (uint8_t i = 0; i < NUM_MOTORS; i++) {
     motor_current_running_average(i);
     max_load_check(i);
