@@ -106,16 +106,22 @@ static int failures = 0;
 
 int main(void)
 {
+  bool ok;
+
   // Scenario 1: app move-start acquires the lock; a switch command while
   // APP holds it is force-stopped, not executed as a switch move.
   reset_stub(true);
-  bed_move_start(BED_SOURCE_APP, BED_TARGET_HEAD, BED_DIR_UP);
+  ok = bed_move_start(BED_SOURCE_APP, BED_TARGET_HEAD, BED_DIR_UP);
   CHECK(move_start_calls == 1 && bed_active_source() == BED_SOURCE_APP,
         "scenario 1a: app bed_move_start acquires the lock as APP");
+  CHECK(ok == true,
+        "scenario 1a-ret: bed_move_start returns true when it performs the normal action");
 
-  bed_move_start(BED_SOURCE_SWITCHES, BED_TARGET_HEAD, BED_DIR_UP);
+  ok = bed_move_start(BED_SOURCE_SWITCHES, BED_TARGET_HEAD, BED_DIR_UP);
   CHECK(stop_all_calls == 1 && move_start_calls == 1,
         "scenario 1b: switch move while APP holds the lock forces a stop, not a switch move");
+  CHECK(ok == false,
+        "scenario 1b-ret: bed_move_start returns false when force-stopped instead of performing the move");
   CHECK(bed_active_source() == BED_SOURCE_APP,
         "scenario 1c: lock still shows APP immediately after the forced stop (lazy release happens on the next call/tick)");
 
@@ -124,33 +130,63 @@ int main(void)
   // including a non-movement verb (auto-level), matching "any input
   // whatsoever from the other source is interpreted ONLY as a stop".
   reset_stub(true);
-  bed_move_start(BED_SOURCE_SWITCHES, BED_TARGET_ALL, BED_DIR_DOWN);
+  ok = bed_move_start(BED_SOURCE_SWITCHES, BED_TARGET_ALL, BED_DIR_DOWN);
   CHECK(move_start_calls == 1 && bed_active_source() == BED_SOURCE_SWITCHES,
         "scenario 2a: switch bed_move_start acquires the lock as SWITCHES");
+  CHECK(ok == true,
+        "scenario 2a-ret: bed_move_start returns true when it performs the normal action");
 
-  bed_auto_level_start(BED_SOURCE_APP);
+  ok = bed_auto_level_start(BED_SOURCE_APP);
   CHECK(stop_all_calls == 1 && auto_level_start_calls == 0,
         "scenario 2b: app auto-level while SWITCHES holds the lock forces a stop, not an app auto-level start");
+  CHECK(ok == false,
+        "scenario 2b-ret: bed_auto_level_start returns false when force-stopped instead of starting");
+
+  // Scenario 2c: bed_lights_set follows the same force-stop-returns-false
+  // rule as the other non-stop verbs.
+  reset_stub(true);
+  bed_move_start(BED_SOURCE_SWITCHES, BED_TARGET_ALL, BED_DIR_DOWN);
+  ok = bed_lights_set(BED_SOURCE_APP, true);
+  CHECK(stop_all_calls == 1 && lights_set_calls == 0,
+        "scenario 2c: app lights-set while SWITCHES holds the lock forces a stop, not a lights change");
+  CHECK(ok == false,
+        "scenario 2c-ret: bed_lights_set returns false when force-stopped instead of setting lights");
 
   // Scenario 3: stop always succeeds from either source - both the
-  // non-active source's stop request AND the active source's own stop.
+  // non-active source's stop request AND the active source's own stop -
+  // and bed_move_stop/bed_auto_level_stop always report true (stop-class
+  // verbs have no "requested action did not happen" case; see bed_control.h).
   reset_stub(false); // bed is "moving" under SWITCHES
   bed_move_start(BED_SOURCE_SWITCHES, BED_TARGET_HEAD, BED_DIR_UP);
   move_start_calls = 0; // ignore the acquire call itself for this scenario's counts
   stub_idle = false;
 
-  bed_move_stop(BED_SOURCE_APP); // non-active source requests a stop
+  ok = bed_move_stop(BED_SOURCE_APP); // non-active source requests a stop
   CHECK(stop_all_calls == 1,
         "scenario 3a: non-active-source stop request still results in a full stop (never refused)");
+  CHECK(ok == true,
+        "scenario 3a-ret: bed_move_stop returns true even when the stop was a forced full stop");
 
   reset_stub(true);
   bed_move_start(BED_SOURCE_SWITCHES, BED_TARGET_HEAD, BED_DIR_UP); // re-acquire as SWITCHES
   move_start_calls = 0;
   stub_idle = false;
 
-  bed_move_stop(BED_SOURCE_SWITCHES); // active source's own stop
+  ok = bed_move_stop(BED_SOURCE_SWITCHES); // active source's own stop
   CHECK(move_stop_calls == 1 && stop_all_calls == 0,
         "scenario 3b: active source's own stop calls its natural stop action, not a forced stop");
+  CHECK(ok == true,
+        "scenario 3b-ret: bed_move_stop returns true for its own normal stop");
+
+  // Scenario 3c: bed_auto_level_stop mirrors 3a/3b for the auto-level path.
+  reset_stub(false); // bed "moving" (auto-leveling) under SWITCHES
+  bed_auto_level_start(BED_SOURCE_SWITCHES);
+  auto_level_start_calls = 0;
+  stub_idle = false;
+
+  ok = bed_auto_level_stop(BED_SOURCE_APP); // non-active source requests a stop
+  CHECK(stop_all_calls == 1 && ok == true,
+        "scenario 3c: non-active-source auto-level stop forces a full stop and still returns true");
 
   // Scenario 4: re-acquire after idle - the lock releases once the bed goes
   // idle (via bed_control_tick), and the next source to command acquires it.
@@ -159,9 +195,11 @@ int main(void)
   CHECK(bed_active_source() == BED_SOURCE_NONE,
         "scenario 4a: tick releases the lock once idle");
 
-  bed_move_start(BED_SOURCE_APP, BED_TARGET_FOOT, BED_DIR_DOWN);
+  ok = bed_move_start(BED_SOURCE_APP, BED_TARGET_FOOT, BED_DIR_DOWN);
   CHECK(move_start_calls == 1 && bed_active_source() == BED_SOURCE_APP,
         "scenario 4b: next source's start acquires the lock after release");
+  CHECK(ok == true,
+        "scenario 4b-ret: bed_move_start returns true acquiring the lock after release");
 
   printf("\n%d check(s) failed\n", failures);
   return failures == 0 ? 0 : 1;

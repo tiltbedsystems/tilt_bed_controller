@@ -39,11 +39,23 @@ typedef enum {
   BED_DIR_UP
 } bed_direction_t;
 
-void bed_move_start(bed_source_t src, bed_target_t target, bed_direction_t dir);
-void bed_move_stop(bed_source_t src);
-void bed_auto_level_start(bed_source_t src);
-void bed_auto_level_stop(bed_source_t src);
-void bed_lights_set(bed_source_t src, bool on);
+// Returns true if the call performed its requested action (started the move/
+// auto-level, or set the lights) as normal. Returns false if a DIFFERENT
+// source held the lock, so this call was redirected into a full clean stop
+// instead (DECISIONS.md #12's stop-from-anyone rule) - the requested action
+// did NOT happen. BLE Command Result (BLE_GATT_DESIGN.md #7) uses this to
+// tell ACCEPTED apart from FORCE_STOPPED_OTHER_SOURCE.
+bool bed_move_start(bed_source_t src, bed_target_t target, bed_direction_t dir);
+bool bed_auto_level_start(bed_source_t src);
+bool bed_lights_set(bed_source_t src, bool on);
+
+// Stop-class verbs always return true: a stop request always succeeds at
+// stopping the bed, whether it stopped normally (this source held or
+// acquired the lock) or via a full force-stop (the other source's
+// stop-from-anyone path, DECISIONS.md #12) - either way the bed is
+// stopping, so there is no "requested action did not happen" case to report.
+bool bed_move_stop(bed_source_t src);
+bool bed_auto_level_stop(bed_source_t src);
 
 // Call once per app tick: releases the lock promptly when the bed goes idle.
 void bed_control_tick(void);

@@ -43,49 +43,54 @@ static arbitrate_result_t arbitrate(bed_source_t src)
   return ARBITRATE_FORCE_STOP;
 }
 
-void bed_move_start(bed_source_t src, bed_target_t target, bed_direction_t dir)
+bool bed_move_start(bed_source_t src, bed_target_t target, bed_direction_t dir)
 {
   if (arbitrate(src) == ARBITRATE_FORCE_STOP) {
     app_stop_all();
-    return;
+    return false;
   }
   app_move_start(target, dir);
+  return true;
 }
 
-void bed_move_stop(bed_source_t src)
+bool bed_move_stop(bed_source_t src)
 {
   if (arbitrate(src) == ARBITRATE_FORCE_STOP) {
     app_stop_all();
-    return;
+    return true;
   }
   app_move_stop();
+  return true;
 }
 
-void bed_auto_level_start(bed_source_t src)
+bool bed_auto_level_start(bed_source_t src)
 {
   if (arbitrate(src) == ARBITRATE_FORCE_STOP) {
     app_stop_all();
-    return;
+    return false;
   }
   app_auto_level_start();
+  return true;
 }
 
-void bed_auto_level_stop(bed_source_t src)
+bool bed_auto_level_stop(bed_source_t src)
 {
   if (arbitrate(src) == ARBITRATE_FORCE_STOP) {
     app_stop_all();
-    return;
+    return true;
   }
   app_auto_level_stop();
+  return true;
 }
 
-void bed_lights_set(bed_source_t src, bool on)
+bool bed_lights_set(bed_source_t src, bool on)
 {
   if (arbitrate(src) == ARBITRATE_FORCE_STOP) {
     app_stop_all();
-    return;
+    return false;
   }
   app_lights_set(on);
+  return true;
 }
 
 void bed_control_tick(void)
