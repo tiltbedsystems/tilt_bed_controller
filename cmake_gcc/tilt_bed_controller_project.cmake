@@ -5,6 +5,7 @@ target_sources(tilt_bed_controller PRIVATE
 	"../bed_control.c"
 	"../bed_settings.c"
 	"../bed_status.c"
+	"../ble_bed_service.c"
 	"../dual_motor_control.c"
 	"../exp_board.c"
 	"../exp_ui.c"

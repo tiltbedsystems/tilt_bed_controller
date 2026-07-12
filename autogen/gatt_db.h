@@ -20,6 +20,12 @@ extern const sli_bt_gattdb_t gattdb;
 #define gattdb_hardware_revision_string       20
 #define gattdb_firmware_revision_string       22
 #define gattdb_system_id                      24
+#define gattdb_tilt_bed_service               25
+#define gattdb_command                        27
+#define gattdb_command_result                 29
+#define gattdb_bed_status                     32
+#define gattdb_client_role                    35
+#define gattdb_protocol_version               38
 
 #define gattdb_generic_attribute_len          2
 #define gattdb_service_changed_char_len       4
@@ -32,6 +38,11 @@ extern const sli_bt_gattdb_t gattdb;
 #define gattdb_hardware_revision_string_len   5
 #define gattdb_firmware_revision_string_len   8
 #define gattdb_system_id_len                  8
+#define gattdb_tilt_bed_service_len           16
+#define gattdb_command_len                    4
+#define gattdb_command_result_len             2
+#define gattdb_bed_status_len                 20
+#define gattdb_protocol_version_len           1
 
 
 #endif // __GATT_DB_H
