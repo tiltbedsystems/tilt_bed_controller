@@ -19,23 +19,34 @@
 #include "gatt_db.h"
 #include "sl_sleeptimer.h"
 
-// DEBUG: security-lifecycle logging for the fresh-pairing bring-up bug.
-// Remove once bonding is confirmed working on the bench (matches this
-// repo's existing DEBUG-instrument-then-remove convention).
+// Security-lifecycle diagnostic logging (bonding/connection state prints
+// below, at sl_bt_evt_sm_bonded/sm_bonding_failed/sm_confirm_bonding/
+// connection_opened/connection_closed). Originally added to diagnose the
+// fresh-pairing bring-up bug; kept on rather than removed now that pairing
+// is bench-confirmed working (62773f6 / this session), because each print
+// fires once per connection/bonding event - not per tick, so it carries
+// none of the timing-loop cost this session's other findings are about -
+// and reason/status codes here (e.g. connection_closed's 0x1008) are the
+// most useful diagnostic for exactly the class of BLE-drop bug that has
+// already bitten this project once. Set to 0 for a quiet production log.
+#define BLE_DEBUG_SECURITY_LOG 1
 
-// BENCH-ONLY, TEMPORARY: wipe the BLE bonding table on every boot so
-// bring-up testing always starts from an empty bond table, regardless of
-// what accumulated in NVM3 across reflashes (NVM3 survives a reflash;
-// nothing before this normally called sl_bt_sm_delete_bondings(), so stale
-// firmware-side bonds were accumulating while the phone side kept getting
-// cleared - see the AUTH FAIL bench findings). sl_bt_sm_delete_bondings()
-// only touches the Bluetooth stack's own bonding database - a distinct
-// NVM3 object from the application's settings storage (nvm3_default_config.h
-// / bed_settings.c / nvm3_functions.c use their own separate keys) - so this
-// cannot disturb calibration/settings data.
-// REMOVE THIS BLOCK before shipping: a production unit must keep customer
-// bonds across a reset, exactly like it keeps their settings.
-#define BLE_BENCH_WIPE_BONDS 1
+// Bench-only, gated OFF by default (matches debug_capture.h's
+// BED_CAPTURE_MOTOR_CURRENTS convention - a hardcoded, source-visible flag
+// that must be hand-flipped for a bench session, never left on by accident).
+// When 1, wipes the BLE bonding table on every boot so bring-up testing
+// always starts from an empty bond table, regardless of what accumulated in
+// NVM3 across reflashes (NVM3 survives a reflash; nothing before this
+// normally called sl_bt_sm_delete_bondings(), so stale firmware-side bonds
+// were accumulating while the phone side kept getting cleared - see the
+// AUTH FAIL bench findings). sl_bt_sm_delete_bondings() only touches the
+// Bluetooth stack's own bonding database - a distinct NVM3 object from the
+// application's settings storage (nvm3_default_config.h / bed_settings.c /
+// nvm3_functions.c use their own separate keys) - so this cannot disturb
+// calibration/settings data.
+// NEVER leave enabled (1) in a normal build - a production unit must keep
+// customer bonds across a reset, exactly like it keeps their settings.
+#define BLE_BENCH_WIPE_BONDS 0
 
 /*******************************************************************************
  *** Bed Status wire encoding (BLE_GATT_DESIGN.md #6)
@@ -350,12 +361,14 @@ void ble_bed_service_on_event(sl_bt_msg_t *evt)
       uint8_t connection = evt->data.evt_connection_opened.connection;
       track_connection_opened(connection);
 
-      // DEBUG: bonding != 0xff here means the stack recognized this as a
-      // RESUMING known bond at connect time, before any pairing happens -
-      // direct evidence of a stale firmware-side bond if the phone reports
-      // itself as not bonded.
+#if BLE_DEBUG_SECURITY_LOG
+      // bonding != 0xff here means the stack recognized this as a RESUMING
+      // known bond at connect time, before any pairing happens - direct
+      // evidence of a stale firmware-side bond if the phone reports itself
+      // as not bonded.
       printf("BLE: connection_opened conn=%u bonding=0x%02x\r\n",
              connection, evt->data.evt_connection_opened.bonding);
+#endif
 
       sc = sl_bt_connection_set_parameters(connection,
                                             CONN_MIN_INTERVAL, CONN_MAX_INTERVAL,
@@ -370,30 +383,36 @@ void ble_bed_service_on_event(sl_bt_msg_t *evt)
     }
 
     case sl_bt_evt_connection_closed_id:
-      // DEBUG: an sl_status_t code - see sl_status.h SL_STATUS_BT_CTRL_*
-      // (e.g. 0x1008 = CONNECTION_TIMEOUT / supervision timeout) and
+#if BLE_DEBUG_SECURITY_LOG
+      // An sl_status_t code - see sl_status.h SL_STATUS_BT_CTRL_* (e.g.
+      // 0x1008 = CONNECTION_TIMEOUT / supervision timeout) and
       // SL_STATUS_BT_SMP_* for pairing-specific failures.
       printf("BLE: connection_closed conn=%u reason=0x%04x\r\n",
              evt->data.evt_connection_closed.connection,
              evt->data.evt_connection_closed.reason);
+#endif
       handle_connection_closed(evt->data.evt_connection_closed.connection);
       break;
 
     case sl_bt_evt_sm_bonded_id:
+#if BLE_DEBUG_SECURITY_LOG
       printf("BLE SM: bonded conn=%u bonding=0x%02x security_mode=%u\r\n",
              evt->data.evt_sm_bonded.connection,
              evt->data.evt_sm_bonded.bonding,
              evt->data.evt_sm_bonded.security_mode);
+#endif
       assign_role_if_needed(evt->data.evt_sm_bonded.connection);
       break;
 
-    // DEBUG: an sl_status_t code - see sl_status.h SL_STATUS_BT_SMP_* for
+    // An sl_status_t code - see sl_status.h SL_STATUS_BT_SMP_* for
     // pairing-specific failures (e.g. 0x1203 = AUTHENTICATION_REQUIREMENTS,
     // IO-capability mismatch).
     case sl_bt_evt_sm_bonding_failed_id:
+#if BLE_DEBUG_SECURITY_LOG
       printf("BLE SM: bonding_failed conn=%u reason=0x%04x\r\n",
              evt->data.evt_sm_bonding_failed.connection,
              evt->data.evt_sm_bonding_failed.reason);
+#endif
       break;
 
     // Per sl_bt_sm_configure()'s bit-3 doc, this should NOT fire in our
@@ -404,8 +423,10 @@ void ble_bed_service_on_event(sl_bt_msg_t *evt)
     // "Just Works is fine for bring-up."
     case sl_bt_evt_sm_confirm_bonding_id: {
       const sl_bt_evt_sm_confirm_bonding_t *cb = &evt->data.evt_sm_confirm_bonding;
+#if BLE_DEBUG_SECURITY_LOG
       printf("BLE SM: confirm_bonding conn=%u bonding_handle=0x%02x (auto-confirming)\r\n",
              cb->connection, cb->bonding_handle);
+#endif
       sl_bt_sm_bonding_confirm(cb->connection, 1);
       break;
     }
