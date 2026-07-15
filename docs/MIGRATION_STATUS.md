@@ -28,11 +28,31 @@ Following SDK_PORTING_GUIDE.md, gates in order:
       commit `1165ecf`. Bounded semantic-drift check across sl_pwm, nvm3,
       sl_sleeptimer, sl_i2cspm, sl_simple_button, and IADC init found no
       behavioral drift versus the 4.2.2 baseline.
-- [ ] Phase 6 — **full REGRESSION.md pass on migrated firmware, BEFORE any
-      BLE glue** (this is the hard gate; DECISIONS #20). Test record
-      prepped: `docs/REGRESSION_RECORD_D1.md`.
+- [ ] Phase 6 — full REGRESSION.md pass on migrated firmware. Originally
+      scoped as the hard gate BEFORE any BLE glue (DECISIONS #20); in
+      practice, BLE Stage B (below) proceeded ahead of this gate since it
+      cannot drive a motor and gave a live testbed for two BLE-drop bugs
+      that have since been found and fixed (DECISIONS #26/#27). Stage C
+      (the motor-driving command path) remains hard-gated on this pass.
+      Test record prepped: `docs/REGRESSION_RECORD_D1.md` — still blank,
+      not yet run. REGRESSION.md itself was updated this session to require
+      a phone connected and subscribed throughout the pass (see below), so
+      REGRESSION_RECORD_D1.md's checklist copy (taken before that update)
+      should be refreshed from the current REGRESSION.md before this pass
+      is run.
 
-Only after Phase 6 does actual BLE work (BLE_GATT_DESIGN.md) begin.
+## BLE status (BLE_GATT_DESIGN.md)
+
+- [x] **Stage B** — advertising, bonding, per-connection CONTROL/VIEWER role
+      tracking, read-only Bed Status telemetry (`ble_bed_service.c`).
+      **Bench-verified**: bonding works, Bed Status telemetry updates live
+      while subscribed, and auto-level no longer drops the link (both
+      BLE-drop bugs were the same root cause — DECISIONS #26/#27).
+- [ ] **Stage C** — Command characteristic → motors + dead-man watchdog
+      (BLE_GATT_DESIGN.md §4-5). **Not started. Hard-gated on the Phase 6
+      REGRESSION.md pass above**, which must now be run with a phone
+      connected and subscribed throughout (REGRESSION.md's own updated
+      preamble).
 
 ## The docs, and what changed recently
 
@@ -46,14 +66,17 @@ Only after Phase 6 does actual BLE work (BLE_GATT_DESIGN.md) begin.
   above). Written for the GUI path; note the IDE is now VS Code, not the old
   in-Studio "Simplicity IDE".
 - **BLE_GATT_DESIGN.md** — the D1 BLE protocol contract (services,
-  characteristics, packet layouts, watchdog, roles, OTA). Not started yet;
-  it's the Phase-6-onward work and the app's interface spec.
+  characteristics, packet layouts, watchdog, roles, OTA). Stage B (§3/§6/§8
+  minus Stage C's command path) is implemented and bench-verified; Stage C
+  (§4/§5, the command→motor path) is not started — see "BLE status" above.
 - **REFACTOR_PLAN.md** — the A–D plan. Phases A–C are complete on the old
   project; D1 is this migration. The D1 note has been updated to reflect #25
   and the fresh-project migration.
 - **REGRESSION.md** — the hardware regression checklist; the Phase 6 gate.
-  A new per-motor PWM check (for #25) should be folded in (see
-  HARDWARE_CONFIG.md §4).
+  Includes the §2b per-motor PWM check (#25). Now also requires a phone
+  connected and subscribed to Bed Status throughout the pass, with a
+  "BLE link stays up" check added to each timing-sensitive section
+  (DECISIONS #26/#27) — run it that way from here on, not BLE-free.
 - **SETPOINTS_INVENTORY.md**, **APP_KICKOFF_PROMPT.md**, **APP_SETUP_GUIDE.md**
   — setpoint reference and the (separate, parallel) Flutter-app track.
 
@@ -68,9 +91,14 @@ Only after Phase 6 does actual BLE work (BLE_GATT_DESIGN.md) begin.
    printf in `app.c`).
 3. **`app.c` merge is the one non-mechanical step**: keep the SoC Empty
    sample's `main.c` + `sl_bt_on_event` structure; merge the old
-   `app_init()` / `app_process_action()` bodies into it. Until BLE work
-   begins, the radio stays dormant and behavior must match the 4.2.2 baseline.
+   `app_init()` / `app_process_action()` bodies into it. The radio is no
+   longer dormant (Stage B is live) — non-BLE bed behavior must still match
+   the 4.2.2 baseline, but "until BLE work begins" no longer describes the
+   current state.
 4. **Grep for hardcoded `TIMER0`/`TIMERx`** references during the port and
    flag any (part of the #25 change).
-5. **Regression before BLE.** Do not write BLE glue until the migrated
-   firmware passes the full REGRESSION.md pass on hardware.
+5. **Regression before Stage C.** DECISIONS #20's original rule (no BLE glue
+   before the full REGRESSION.md pass) held for the motor-driving command
+   path: Stage C is hard-gated on Phase 6, per "BLE status" above. Stage B
+   (telemetry-only, no command path — cannot drive a motor either way) was
+   allowed to proceed ahead of Phase 6 in practice, and is bench-verified.

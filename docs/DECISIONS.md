@@ -474,3 +474,55 @@ a real safety-relevant decision — not something to inherit by default from
 whatever the interim polling happens to support — and should be made
 deliberately in a future session, alongside deciding whether to finish the
 interrupt-latched path first.
+
+## 27. Auto-level's BLE-drop bug is fixed, not "confirmed still present" — correcting 62773f6, and the general rule this session established
+
+**Correction.** Commit 62773f6's message states the auto-level BLE-drop bug
+(a supervision-timeout disconnect during a sustained auto-level run) is
+"confirmed still present and untouched — not part of this fix." That was
+accurate at the time it was written but is now stale: bench testing this
+session confirmed auto-level **no longer drops the link**. Both BLE-drop
+bugs — the Bed Status subscribe-time drop that 62773f6 explicitly fixed, and
+the separate auto-level sustained-move drop it explicitly left open — had
+the **same root cause**: `bed_status_get()` calling `get_motor_faults()`, a
+blocking `I2CSPM_Transfer` on `sl_i2cspm_on_board`, from
+`ble_bed_service_tick()`. During an ordinary Bed Status notify this is one
+extra blocking I2C call; during auto-level, `accel_running_average()` is
+already doing a blocking transfer on that same bus every super-loop pass
+(app.c), so the fault read stacked a second blocking transfer on top of the
+accel's on literally every tick for the run's full duration — enough to
+starve the radio past the 1 s supervision timeout on a long enough hold, in
+a way a single subscribe-time call could not. Removing the blocking call
+(62773f6) fixed both symptoms at once, even though only one was diagnosed
+as fixed at the time. Left uncorrected, "confirmed still present" would
+mislead anyone reading the git history into re-investigating a bug that no
+longer exists, or worse, avoiding auto-level+BLE bench time under the
+assumption it's known-broken.
+
+**The general rule, stated plainly so it doesn't have to be rediscovered:**
+
+- **Never call anything blocking from a BLE stack event callback**
+  (`sl_bt_on_event` / `ble_bed_service_on_event` and anything they call
+  synchronously). If a callback needs data that requires I2C, NVM3, or any
+  other wait, it must set a flag and let a main-loop tick function
+  (`app_process_action()` and the `*_tick()` functions it calls) do the
+  actual work on the next pass. `bed_status_get()`'s fix (#26) and the
+  existing `status_notify_due` flag pattern in `ble_bed_service.c` are the
+  worked examples to copy.
+- **Never add a new per-tick blocking I2C transaction on
+  `sl_i2cspm_on_board`** (the accelerometer's bus) without checking what
+  else already runs on that bus every tick during the states that matter
+  (auto-level, zero-level capture in settings mode). `accel_running_average()`
+  already owns that bus at full tick rate during those windows; anything
+  else added there is additive load, not free, even from correct
+  (non-callback) main-loop context — see #26's 200 ms rate-limiting for the
+  pattern of gating a second consumer of that bus.
+- Both bugs were invisible until BLE Stage B put the radio in continuous use
+  during ordinary bed operation. Now that it's always active (not just
+  during a dedicated BLE test), this class of bug can surface anywhere a
+  future change touches the main loop, the accel bus, or a stack callback —
+  see Task 2's audit (session notes, not a doc) for the sweep this prompted
+  and DECISIONS.md's own bar going forward: a blocking call in a stack
+  callback, or a new per-tick transaction on the accel's bus, should be
+  treated as a specific, callable-out risk in any future review, not
+  something that only gets caught by re-deriving this history from scratch.

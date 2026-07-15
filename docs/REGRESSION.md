@@ -5,6 +5,18 @@ Formal hardware checklist for the refactor phases in
 boundary (end of Phase A, B, C) and after step B5 specifically. Items marked
 ⚡ form the **smoke subset** for per-step verification between boundaries.
 
+**Since BLE Stage B (advertising + read-only telemetry, bench-verified), run
+the full pass with a phone connected, bonded, and subscribed to Bed Status
+notifications throughout - not as a separate BLE-only test.** The radio is
+now active during every bed operation, not just idle. Both BLE-drop bugs
+found so far (the Bed Status subscribe-time drop and the auto-level
+sustained-move drop, DECISIONS.md #26) were triggered by ordinary bed
+operation with a phone connected, not by anything BLE-specific in isolation
+- a regression pass run without a subscribed phone would not have caught
+either one. Each section below with hardware-in-the-loop timing has its own
+"BLE link stays up" check; a disconnect during any of them is a regression
+regardless of whether the bed behavior itself looks correct.
+
 Copy this file's checklist into the test record (or print it) per run —
 don't check boxes in the committed copy.
 
@@ -18,6 +30,7 @@ don't check boxes in the committed copy.
 | Build config (Debug/Release) | |
 | Tester | |
 | Bed/frame unit | |
+| Phone connected & subscribed (Bed Status) | |
 | Notes (ambient, supply voltage) | |
 
 ## 0. Setup / preconditions
@@ -66,6 +79,7 @@ and the LED lights; release → motors stop, LED off. Watch the motor pair
 - [ ] Rapid repeated taps (5×) on one button: no stuck-on motors, no stuck LEDs
 - [ ] Press one button while another is already held: second press does not
       start additional motors
+- [ ] ⚡ BLE link stays up (no disconnect) through the button matrix
 
 ## 2b. Per-motor PWM timer mapping (D1 migration, DECISIONS #25) — one-time at D1
 
@@ -100,6 +114,8 @@ wired to the correct physical actuators.
 - [ ] DOWN ALL equivalent of the above
 - [ ] Move away from a limit, then back toward it: limit is re-detected
       (flags cleared and re-set correctly)
+- [ ] ⚡ BLE link stays up (no disconnect) through the ALL UP/DOWN
+      limit pause/resume sequence
 
 ## 5. Collision detection
 
@@ -117,6 +133,7 @@ wired to the correct physical actuators.
       is noticeably faster/lighter than at LOW rung
 - [ ] (Optional, destructive-adjacent — skip in routine runs) Max-load
       ceiling: verify `TRIPPED MAX LOAD` on a deliberately stalled motor
+- [ ] ⚡ BLE link stays up (no disconnect) through the collision sequence
 
 ## 6. Auto-level
 
@@ -137,6 +154,10 @@ pitch, all actuators clear of limits.
       "sneak" moves (Pulse on/off prints), no overshoot oscillation
 - [ ] 6.7 Auto-level respects limits: with one actuator at its limit on the
       driven axis, leveling stops that pair and does not fight the limit
+- [ ] ⚡ 6.8 BLE link stays up (no disconnect) through a full auto-level
+      run, start to "Bed is level" - the original auto-level BLE-drop bug
+      (DECISIONS.md #26) only manifested on a sustained multi-second move,
+      so a quick/near-level test is not sufficient coverage for this check
 
 ## 7. Settings mode
 
@@ -156,6 +177,8 @@ pitch, all actuators clear of limits.
 - [ ] 7.8 Motor buttons in settings mode do NOT move motors
 - [ ] 7.9 Exit: power cycle returns to normal mode (settings mode has no
       soft exit — known, REFACTOR_PLAN P3.13)
+- [ ] ⚡ BLE link stays up (no disconnect) through settings mode entry,
+      zero-level store/erase, and sensitivity adjustment
 
 ## 8. Bed lights
 
