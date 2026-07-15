@@ -417,3 +417,60 @@ specifically — it is caused by *any* configurator regeneration of
 development means many more configurator touches, which is what makes the
 old hand-edit workaround an ongoing liability and motivates settling this
 now.
+
+## 26. Motor driver fault telemetry — interim polled, interrupt path unfinished, real motor protection is elsewhere
+
+**Context.** Commit 62773f6 found `bed_status_get()` calling `get_motor_faults()`
+— a blocking `I2CSPM_Transfer` on `sl_i2cspm_on_board`, the same bus the MC3479
+accelerometer uses — from inside a BLE stack event callback, which stalled the
+super loop long enough to drop the BLE link. The fix hardcoded the Bed Status
+packet's per-motor fault bit (§6) to 0 rather than restore a blocking call.
+
+**Restored (this session), interim.** `bed_status_get()` now reads
+`get_cached_motor_faults()` (`exp_board.c`), a non-blocking accessor over a
+value sampled by `sample_motor_faults_tick()` — called once per
+`app_process_action()` pass in main-loop context (never from a stack
+callback), rate-limited to once per **200 ms** via `sl_sleeptimer` (ms-based,
+#2) so it doesn't add a second per-tick blocking I2C transaction alongside
+the accelerometer's on the same bus during auto-level.
+
+**This is explicitly interim, not the final answer:**
+
+- Polling reads the expander's **instantaneous** input state. A fault
+  shorter than roughly 200 ms is missed entirely between samples — there is
+  no latching between polls. The expander (`init_board_expander()`,
+  `exp_board.c`) has interrupt-latch registers meant to catch exactly this;
+  they were never configured (existing comment: "Configure latch registers
+  once signal interrupt working to respond to potential motor fault from
+  driver IC's").
+- At 200 ms, the moving-state BLE status notify cadence is 100 ms (§6), so
+  up to **two consecutive notifications can carry the same stale fault
+  value**. Acceptable for a slow-developing driver fault (over-current/
+  over-voltage/thermal shutdown per the MP6522 nFAULT behavior), not for a
+  fast transient.
+- The gap this closes is bigger than just the cache: before this session,
+  `get_motor_faults()` had **zero callers anywhere** in the firmware, and
+  `sl_button_on_change()` (`switch_input.c`) does not dispatch the
+  `fault_int` Simple Button instance at all — it only handles `ui_int`, with
+  an existing TODO comment ("Will need to expand logic to handle motor fault
+  as well"). So end-to-end motor-fault handling — hardware pin through to
+  any firmware response — has never been functional. `sample_motor_faults_tick()`
+  gives `get_motor_faults()` its first caller and makes the fault bit
+  live in telemetry; the interrupt-driven path (expander latch config +
+  `fault_int` dispatch) remains unbuilt.
+
+**This does not affect actual motor protection.** The MP6522 nFAULT pin is a
+driver-IC self-report (over-current/over-voltage/thermal shutdown) surfaced
+here purely as diagnostic telemetry for the app. The firmware's actual motor
+protection — `max_load_check()`'s `MAX_LOAD_CURRENT` ceiling and the
+rate-of-change/margin collision detection (#1) — runs independently off the
+current sense path (`motor_current_functions.c`) at the full ~1 ms
+supervision cadence and is untouched by any of the above.
+
+**Open design question, deliberately not answered here.** Should a
+driver-reported fault (over-current/over-voltage/thermal shutdown) actively
+stop the motors, or remain diagnostic-only telemetry as it is today? This is
+a real safety-relevant decision — not something to inherit by default from
+whatever the interim polling happens to support — and should be made
+deliberately in a future session, alongside deciding whether to finish the
+interrupt-latched path first.

@@ -70,15 +70,15 @@ static void translate_command(active_switch_t sw, bed_command_t *command,
 
 void bed_status_get(bed_status_t *out)
 {
-  // Temporarily 0, not a live read: get_motor_faults() performs a blocking
-  // I2CSPM_Transfer on sl_i2cspm_on_board (the same bus the MC3479 accel
-  // driver uses), and this function is called from the BLE Bed Status
-  // notify path (ble_bed_service.c) - a stack event callback, not
-  // coordinated main-loop context. Calling it here stalled the super loop
-  // long enough to drop the BLE link (bench-confirmed: connection_closed
-  // reason 0x1008, supervision timeout). Real fault telemetry will be
-  // restored later from a value sampled in coordinated main-loop context.
-  uint8_t faults = 0;
+  // Non-blocking: reads a value sampled in main-loop context by
+  // sample_motor_faults_tick() (exp_board.c), not a live I2C read. Calling
+  // get_motor_faults() directly here would block on I2CSPM_Transfer on
+  // sl_i2cspm_on_board (the same bus the MC3479 accel driver uses) from
+  // whatever context calls bed_status_get() - this previously included the
+  // BLE stack's gatt_server_characteristic_status callback and stalled the
+  // super loop long enough to drop the BLE link (bench-confirmed:
+  // connection_closed reason 0x1008, supervision timeout).
+  uint8_t faults = get_cached_motor_faults();
 
   for (uint8_t i = 0; i < NUM_MOTORS; i++) {
     out->motors[i].on = motor_state[i].motor_on;

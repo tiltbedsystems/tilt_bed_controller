@@ -41,4 +41,10 @@ void set_I2C_redriver_off();
 
 uint8_t get_motor_faults();
 
+// Interim polled motor-fault telemetry (main-loop context) - see
+// sample_motor_faults_tick()'s comment in exp_board.c for the rate
+// justification and the transient-miss limitation.
+void sample_motor_faults_tick(void);
+uint8_t get_cached_motor_faults(void);
+
 #endif /* EXP_BOARD_H_ */

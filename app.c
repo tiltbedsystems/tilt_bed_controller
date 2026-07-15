@@ -685,6 +685,7 @@ void app_process_action(void)
     sl_atomic_store(heartbeat, local_heartbeat);
   }
 
+  sample_motor_faults_tick();
   bed_control_tick();
   ble_bed_service_tick();
 }

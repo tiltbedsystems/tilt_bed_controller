@@ -9,6 +9,7 @@
 #include "sl_assert.h"
 #include "sl_i2cspm.h"
 #include "sl_i2cspm_instances.h"
+#include "sl_sleeptimer.h"
 
 #include "pi4ioe5v6416.h"
 #include "exp_board.h"
@@ -20,10 +21,22 @@
 #define BOARD_EXP_I2C_DEVICE                (sl_i2cspm_on_board)
 #define BOARD_EXP_I2C_BUS_ADDRESS           0x20
 
+// Motor-fault sampling interval (main-loop-context poll, not interrupt-driven
+// - see sample_motor_faults_tick() below for why). Milliseconds via
+// sleeptimer, never loop counts (DECISIONS.md #2).
+#define MOTOR_FAULT_SAMPLE_INTERVAL_MS       200
+
 /*******************************************************************************
  ***************************  LOCAL VARIABLES   ********************************
  ******************************************************************************/
 
+// Last-sampled fault bits (bit i = motor i, active meaning per
+// get_motor_faults()), updated only from sample_motor_faults_tick() in
+// main-loop context. bed_status_get() reads this via get_cached_motor_faults()
+// instead of calling get_motor_faults() directly, which would block on I2C
+// from whatever context calls it.
+static uint8_t cached_motor_faults = 0;
+static uint32_t last_fault_sample_tick = 0;
 
 /*******************************************************************************
  *********************   LOCAL FUNCTION PROTOTYPES   ***************************
@@ -261,6 +274,45 @@ uint8_t get_motor_faults()
   faults = (~ports[1]) & 0x0F; // bit i = motor i's fault state, active-low
 
   return faults;
+}
+
+// Rate-limited, main-loop-context wrapper around get_motor_faults(). Call
+// once per app_process_action() pass; internally gates the actual I2C read
+// to once per MOTOR_FAULT_SAMPLE_INTERVAL_MS so it doesn't add a second
+// per-tick blocking transaction on sl_i2cspm_on_board alongside the
+// accelerometer's (auto_level.c's accel_running_average() does one I2C
+// transaction on that same bus every super-loop pass during auto-level -
+// see DECISIONS.md's motor-fault-telemetry entry for the full history).
+//
+// This is an INTERIM measure, not the final answer: it polls the
+// expander's INSTANTANEOUS input state, so a fault shorter than roughly
+// MOTOR_FAULT_SAMPLE_INTERVAL_MS can be missed entirely between samples.
+// The expander has interrupt-latch registers meant to catch exactly that
+// (see init_board_expander()'s "Configure latch registers once signal
+// interrupt working" comment) - they are unconfigured, and fault_int's
+// interrupt is not currently wired to anything (see DECISIONS.md).
+//
+// At 200 ms, the moving-state BLE status notify cadence (100 ms, #6) means
+// up to two consecutive notifications can carry the same stale fault byte -
+// acceptable for a slow-developing driver fault (over-current/over-voltage/
+// thermal shutdown), not for a fast transient.
+void sample_motor_faults_tick(void)
+{
+  uint32_t now = sl_sleeptimer_get_tick_count();
+
+  if (sl_sleeptimer_tick_to_ms(now - last_fault_sample_tick) < MOTOR_FAULT_SAMPLE_INTERVAL_MS) {
+    return;
+  }
+
+  last_fault_sample_tick = now;
+  cached_motor_faults = get_motor_faults();
+}
+
+// Non-blocking accessor for the last value sample_motor_faults_tick() read.
+// Safe to call from any context (e.g. bed_status_get()) - never touches I2C.
+uint8_t get_cached_motor_faults(void)
+{
+  return cached_motor_faults;
 }
 
 void set_underbed_lighting_on()
