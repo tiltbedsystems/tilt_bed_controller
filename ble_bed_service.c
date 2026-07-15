@@ -12,11 +12,30 @@
 
 #include "ble_bed_service.h"
 
+#include <stdio.h>
 #include <string.h>
 
 #include "app_assert.h"
 #include "gatt_db.h"
 #include "sl_sleeptimer.h"
+
+// DEBUG: security-lifecycle logging for the fresh-pairing bring-up bug.
+// Remove once bonding is confirmed working on the bench (matches this
+// repo's existing DEBUG-instrument-then-remove convention).
+
+// BENCH-ONLY, TEMPORARY: wipe the BLE bonding table on every boot so
+// bring-up testing always starts from an empty bond table, regardless of
+// what accumulated in NVM3 across reflashes (NVM3 survives a reflash;
+// nothing before this normally called sl_bt_sm_delete_bondings(), so stale
+// firmware-side bonds were accumulating while the phone side kept getting
+// cleared - see the AUTH FAIL bench findings). sl_bt_sm_delete_bondings()
+// only touches the Bluetooth stack's own bonding database - a distinct
+// NVM3 object from the application's settings storage (nvm3_default_config.h
+// / bed_settings.c / nvm3_functions.c use their own separate keys) - so this
+// cannot disturb calibration/settings data.
+// REMOVE THIS BLOCK before shipping: a production unit must keep customer
+// bonds across a reset, exactly like it keeps their settings.
+#define BLE_BENCH_WIPE_BONDS 1
 
 /*******************************************************************************
  *** Bed Status wire encoding (BLE_GATT_DESIGN.md #6)
@@ -152,6 +171,21 @@ static void track_connection_closed(uint8_t connection)
   }
 }
 
+// Shared by sl_bt_evt_sm_bonded (fresh pairing) and sl_bt_evt_connection_
+// parameters (covers a RESUMED bond too - sm_bonded's own doc says it fires
+// for a pairing/bonding PROCEDURE completing, not for simply re-establishing
+// encryption from an already-stored bond on reconnect, which does not repeat
+// the procedure). Idempotent: a connection that already holds a role hits
+// neither branch on a later call.
+static void assign_role_if_needed(uint8_t connection)
+{
+  if (control_connection == SLOT_EMPTY) {
+    control_connection = connection;
+  } else if (viewer_connection == SLOT_EMPTY && connection != control_connection) {
+    viewer_connection = connection;
+  }
+}
+
 static void update_status_subscriber_count(void)
 {
   uint8_t count = (control_status_subscribed ? 1 : 0) + (viewer_status_subscribed ? 1 : 0);
@@ -241,18 +275,6 @@ static void publish_status(const uint8_t *packed, bool moving)
   restart_status_notify_timer(moving);
 }
 
-static void capture_and_publish_status(void)
-{
-  bed_status_t status;
-  bed_status_get(&status);
-
-  uint8_t packed[gattdb_bed_status_len];
-  ble_bed_service_encode_status(&status, false, packed); // tilt_fresh: Stage B5
-
-  bool moving = (status.command == BED_COMMAND_MOVE) || (status.command == BED_COMMAND_AUTO_LEVEL);
-  publish_status(packed, moving);
-}
-
 void ble_bed_service_tick(void)
 {
   if (status_subscriber_count == 0) {
@@ -287,17 +309,25 @@ void ble_bed_service_on_event(sl_bt_msg_t *evt)
                                | SL_BT_SM_CONFIGURATION_SC_ONLY,
                                sl_bt_sm_io_capability_noinputnooutput);
       app_assert_status(sc);
+      printf("BLE SM: configure -> 0x%04x\r\n", (unsigned)sc);
 
       // Reject new bonds once the 8-bond store is full, rather than
       // silently evicting an existing one.
       sc = sl_bt_sm_store_bonding_configuration(BLE_BED_SERVICE_MAX_BONDS, 0);
       app_assert_status(sc);
+      printf("BLE SM: store_bonding_configuration -> 0x%04x\r\n", (unsigned)sc);
 
       // Bondable at all times for now - DECISIONS.md #19's physical
       // pairing-window gate (settings-mode-only bonding) is a later,
       // separately-approved step, not part of bring-up.
       sc = sl_bt_sm_set_bondable_mode(1);
       app_assert_status(sc);
+      printf("BLE SM: set_bondable_mode(1) -> 0x%04x\r\n", (unsigned)sc);
+
+#if BLE_BENCH_WIPE_BONDS
+      sc = sl_bt_sm_delete_bondings();
+      printf("BLE SM: BENCH-ONLY delete_bondings() -> 0x%04x\r\n", (unsigned)sc);
+#endif
 
       sc = sl_bt_advertiser_create_set(&advertising_set_handle);
       app_assert_status(sc);
@@ -320,6 +350,13 @@ void ble_bed_service_on_event(sl_bt_msg_t *evt)
       uint8_t connection = evt->data.evt_connection_opened.connection;
       track_connection_opened(connection);
 
+      // DEBUG: bonding != 0xff here means the stack recognized this as a
+      // RESUMING known bond at connect time, before any pairing happens -
+      // direct evidence of a stale firmware-side bond if the phone reports
+      // itself as not bonded.
+      printf("BLE: connection_opened conn=%u bonding=0x%02x\r\n",
+             connection, evt->data.evt_connection_opened.bonding);
+
       sc = sl_bt_connection_set_parameters(connection,
                                             CONN_MIN_INTERVAL, CONN_MAX_INTERVAL,
                                             CONN_LATENCY, CONN_SUPERVISION_TIMEOUT,
@@ -333,15 +370,56 @@ void ble_bed_service_on_event(sl_bt_msg_t *evt)
     }
 
     case sl_bt_evt_connection_closed_id:
+      // DEBUG: an sl_status_t code - see sl_status.h SL_STATUS_BT_CTRL_*
+      // (e.g. 0x1008 = CONNECTION_TIMEOUT / supervision timeout) and
+      // SL_STATUS_BT_SMP_* for pairing-specific failures.
+      printf("BLE: connection_closed conn=%u reason=0x%04x\r\n",
+             evt->data.evt_connection_closed.connection,
+             evt->data.evt_connection_closed.reason);
       handle_connection_closed(evt->data.evt_connection_closed.connection);
       break;
 
-    case sl_bt_evt_sm_bonded_id: {
-      uint8_t connection = evt->data.evt_sm_bonded.connection;
-      if (control_connection == SLOT_EMPTY) {
-        control_connection = connection;
-      } else if (viewer_connection == SLOT_EMPTY && connection != control_connection) {
-        viewer_connection = connection;
+    case sl_bt_evt_sm_bonded_id:
+      printf("BLE SM: bonded conn=%u bonding=0x%02x security_mode=%u\r\n",
+             evt->data.evt_sm_bonded.connection,
+             evt->data.evt_sm_bonded.bonding,
+             evt->data.evt_sm_bonded.security_mode);
+      assign_role_if_needed(evt->data.evt_sm_bonded.connection);
+      break;
+
+    // DEBUG: an sl_status_t code - see sl_status.h SL_STATUS_BT_SMP_* for
+    // pairing-specific failures (e.g. 0x1203 = AUTHENTICATION_REQUIREMENTS,
+    // IO-capability mismatch).
+    case sl_bt_evt_sm_bonding_failed_id:
+      printf("BLE SM: bonding_failed conn=%u reason=0x%04x\r\n",
+             evt->data.evt_sm_bonding_failed.connection,
+             evt->data.evt_sm_bonding_failed.reason);
+      break;
+
+    // Per sl_bt_sm_configure()'s bit-3 doc, this should NOT fire in our
+    // config (bit 3 is clear - "Bonding request does not need to be
+    // confirmed"). Handled and logged anyway as a canary: if this DOES
+    // print, that's new information contradicting the documented behavior
+    // and worth knowing. Auto-confirms if it ever does fire, matching
+    // "Just Works is fine for bring-up."
+    case sl_bt_evt_sm_confirm_bonding_id: {
+      const sl_bt_evt_sm_confirm_bonding_t *cb = &evt->data.evt_sm_confirm_bonding;
+      printf("BLE SM: confirm_bonding conn=%u bonding_handle=0x%02x (auto-confirming)\r\n",
+             cb->connection, cb->bonding_handle);
+      sl_bt_sm_bonding_confirm(cb->connection, 1);
+      break;
+    }
+
+    // Covers a RESUMED bond's encryption completing, which sl_bt_evt_sm_
+    // bonded does not fire for (see assign_role_if_needed's comment). This
+    // event also fires once at raw connection-open with security_mode ==
+    // no-security, which the check below correctly ignores.
+    case sl_bt_evt_connection_parameters_id: {
+      const sl_bt_evt_connection_parameters_t *params = &evt->data.evt_connection_parameters;
+      printf("BLE: connection_parameters conn=%u interval=%u security_mode=%u\r\n",
+             params->connection, params->interval, params->security_mode);
+      if (params->security_mode != sl_bt_connection_mode1_level1) {
+        assign_role_if_needed(params->connection);
       }
       break;
     }
@@ -373,7 +451,13 @@ void ble_bed_service_on_event(sl_bt_msg_t *evt)
         update_status_subscriber_count();
 
         if (subscribed) {
-          capture_and_publish_status(); // push current state immediately on subscribe
+          // Do NOT publish synchronously here - this runs in the stack
+          // event callback, not coordinated main-loop context, and
+          // bed_status_get() can block on I2C (bench-confirmed: this was
+          // stalling the super loop long enough to drop the BLE link).
+          // Flagging due lets the next ble_bed_service_tick() publish from
+          // the main loop instead.
+          status_notify_due = true;
         }
       }
       break;
