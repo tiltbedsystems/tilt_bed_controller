@@ -316,8 +316,14 @@ void ble_bed_service_on_event(sl_bt_msg_t *evt)
     case sl_bt_evt_system_boot_id:
       // Bonded + encrypted, Just Works (no MITM claim - no display/passkey
       // entry hardware), LE Secure Connections only (BLE_GATT_DESIGN.md #8).
+      // Bit 3 (BONDING_REQUEST_REQUIRED) is set so sl_bt_evt_sm_confirm_bonding
+      // fires and the app decides whether to allow a re-pair against an
+      // existing bond, instead of the stack auto-rejecting it (bench-
+      // confirmed 0x1205 SMP_PAIRING_NOT_SUPPORTED with this bit clear -
+      // DECISIONS.md #28, auto-replace fix for the stale-bond lockout bug).
       sc = sl_bt_sm_configure(SL_BT_SM_CONFIGURATION_BONDING_REQUIRED
-                               | SL_BT_SM_CONFIGURATION_SC_ONLY,
+                               | SL_BT_SM_CONFIGURATION_SC_ONLY
+                               | SL_BT_SM_CONFIGURATION_BONDING_REQUEST_REQUIRED,
                                sl_bt_sm_io_capability_noinputnooutput);
       app_assert_status(sc);
       printf("BLE SM: configure -> 0x%04x\r\n", (unsigned)sc);
@@ -415,17 +421,26 @@ void ble_bed_service_on_event(sl_bt_msg_t *evt)
 #endif
       break;
 
-    // Per sl_bt_sm_configure()'s bit-3 doc, this should NOT fire in our
-    // config (bit 3 is clear - "Bonding request does not need to be
-    // confirmed"). Handled and logged anyway as a canary: if this DOES
-    // print, that's new information contradicting the documented behavior
-    // and worth knowing. Auto-confirms if it ever does fire, matching
-    // "Just Works is fine for bring-up."
+    // Fires for every bonding attempt now that sl_bt_sm_configure()'s bit 3
+    // (BONDING_REQUEST_REQUIRED) is set (DECISIONS.md #28). bonding_handle
+    // == 0xff (SL_BT_INVALID_BONDING_HANDLE) is a fresh pairing with no
+    // existing bond; anything else means the peer already resolved to an
+    // existing bond and confirming here REPLACES it (per this event's own
+    // SDK doc: "a bonding already exists ... overwriting is a potential
+    // security risk"). Logged so a replace vs. a new bond is visible on the
+    // bench.
+    //
+    // Today: always confirm - no gate here yet. This is the single decision
+    // point for DECISIONS.md #19's still-unbuilt physical pairing window:
+    // when #19 lands, this becomes "confirm only if the pairing window is
+    // open, reject otherwise" (sl_bt_sm_bonding_confirm(cb->connection, 0)
+    // on the reject path) - not a second mechanism bolted on elsewhere.
     case sl_bt_evt_sm_confirm_bonding_id: {
       const sl_bt_evt_sm_confirm_bonding_t *cb = &evt->data.evt_sm_confirm_bonding;
 #if BLE_DEBUG_SECURITY_LOG
-      printf("BLE SM: confirm_bonding conn=%u bonding_handle=0x%02x (auto-confirming)\r\n",
-             cb->connection, cb->bonding_handle);
+      printf("BLE SM: confirm_bonding conn=%u bonding_handle=0x%02x (%s, auto-confirming)\r\n",
+             cb->connection, cb->bonding_handle,
+             (cb->bonding_handle == SL_BT_INVALID_BONDING_HANDLE) ? "new bond" : "REPLACING existing bond");
 #endif
       sl_bt_sm_bonding_confirm(cb->connection, 1);
       break;
