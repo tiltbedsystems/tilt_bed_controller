@@ -617,3 +617,71 @@ no-bond mismatch has been run and reported.
 it always confirms; when #19's physical pairing window lands, the same
 handler gains one condition (confirm only if the window is open, reject
 otherwise) rather than a second mechanism being built elsewhere.
+
+## 29. Auto-level's filter constants are calibrated in loop passes, not time — and the same problem reaches the collision-detection safety path
+
+**The finding.** `NUM_ACCEL_READINGS` (130, `auto_level.c`) is consumed once
+per super-loop pass in `accel_running_average()`, so the running-average
+window is `130 / loop_rate`, not a fixed duration. `accel_alpha` (0.1),
+applied per call in `accel_low_pass_filter()`, means the LPF's time constant
+is loop-rate-dependent too. Neither constant is defined in milliseconds;
+both are silently retuned by anything that changes loop timing, with no code
+change anywhere near `auto_level.c` needed to do it.
+
+**Bench-measured, not assumed (2026-07-17), during the #27 bisection.** The
+`BED_BISECT_ACCEL_I2C_RATE_LIMIT` bisection (gating the accel I2C burst to
+10 ms, see the #27 investigation) changed loop timing *by accident* as a
+side effect of the thing it was actually testing:
+
+| | Rate limit ON | Rate limit OFF (back-solved) |
+|---|---|---|
+| Loop rate | ~630 passes/sec (1.587 ms/pass) | ~433 passes/sec (2.31 ms/pass) |
+| 130-sample averaging window | ~206 ms | ~300 ms |
+
+That's a **45% loop speedup and a 31% shrink in the averaging window**,
+produced by a change whose stated purpose was "reduce I2C traffic," not
+"retune the control law." Nothing about auto-level's leveling behavior was
+touched on purpose, and its filter behavior changed anyway. This is the
+concrete demonstration of the general risk: as long as these constants are
+counted in passes, *any* change to loop timing — a new peripheral, an added
+per-tick check, a different power-manager policy — retunes auto-level
+without anyone deciding to.
+
+**The same problem reaches actual motor protection — open safety-relevant
+question, not fixed here, not part of the BLE gate.** 1b2f8ee's message
+states current-based supervision is calibrated around a "~1 ms/tick
+free-spin cadence," with a "350-sample dynamic threshold" stated to occur
+"within 303ms." The loop rate has now been measured for the first time
+(above) — during auto-level, with per-pass accel I2C load. Applying the
+without-rate-limit figure (2.31 ms/pass, the closer match to current shipped
+behavior, since the bisection flag does not exist in production code) to
+350 samples gives **~808 ms, not 303 ms — 2.7x the original design
+assumption**. Per DECISIONS #26, current-based protection (`max_load_check`
++ the rate-of-change/margin collision detection, #1) is the *actual* motor
+protection, not the driver-fault telemetry — so a design assumption that's
+off by 2.7x on the timing of a "350-sample dynamic threshold" is worth
+knowing about regardless of anything BLE-related.
+
+**Caveat on scope, stated explicitly so this isn't overclaimed:** the
+1.587/2.31 ms/pass figures above are auto-level-specific measurements and
+include auto-level's per-pass accel I2C load (`accel_running_average()` /
+`read_accel()`), which does **not** run during a manual switch-driven move —
+`run_motor_supervision()` is shared by both (`motor_current_functions.c`),
+but a manual move's loop rate is a distinct, not-yet-measured quantity, not
+something this entry has numbers for yet. The 2.7x figure characterizes
+auto-level's collision-detection cadence specifically; it should not be read
+as a measurement of manual-move collision-detection timing, which is exactly
+what the Task G bisection's manual-move loop-rate counter (`app.c`,
+uncommitted bisection build) exists to produce. Until that number exists,
+treat "how far off is collision detection's timing assumption during an
+ordinary manual move" as unanswered, not answered pessimistically or
+optimistically by extrapolation from the auto-level figures.
+
+**The rule.** Safety and control timing must be expressed in milliseconds
+and verified against a *measured* loop rate, never defined in loop passes
+against an *assumed* one. A constant that is "N samples" or "N passes" with
+no stated time budget is a constant nobody has actually calibrated — it is
+calibrated against whatever the loop rate happened to be on the bench the
+day the number was chosen, and silently drifts every time loop timing
+changes thereafter, with no compiler warning and no test failure to catch
+it.
