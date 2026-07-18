@@ -475,31 +475,49 @@ whatever the interim polling happens to support — and should be made
 deliberately in a future session, alongside deciding whether to finish the
 interrupt-latched path first.
 
-## 27. Auto-level's BLE-drop bug is fixed, not "confirmed still present" — correcting 62773f6, and the general rule this session established
+## 27. Auto-level's BLE-drop bug is OPEN and UNDIAGNOSED — this entry previously claimed otherwise, and that claim was wrong
 
-**Correction.** Commit 62773f6's message states the auto-level BLE-drop bug
-(a supervision-timeout disconnect during a sustained auto-level run) is
-"confirmed still present and untouched — not part of this fix." That was
-accurate at the time it was written but is now stale: bench testing this
-session confirmed auto-level **no longer drops the link**. Both BLE-drop
-bugs — the Bed Status subscribe-time drop that 62773f6 explicitly fixed, and
-the separate auto-level sustained-move drop it explicitly left open — had
-the **same root cause**: `bed_status_get()` calling `get_motor_faults()`, a
-blocking `I2CSPM_Transfer` on `sl_i2cspm_on_board`, from
-`ble_bed_service_tick()`. During an ordinary Bed Status notify this is one
-extra blocking I2C call; during auto-level, `accel_running_average()` is
-already doing a blocking transfer on that same bus every super-loop pass
-(app.c), so the fault read stacked a second blocking transfer on top of the
-accel's on literally every tick for the run's full duration — enough to
-starve the radio past the 1 s supervision timeout on a long enough hold, in
-a way a single subscribe-time call could not. Removing the blocking call
-(62773f6) fixed both symptoms at once, even though only one was diagnosed
-as fixed at the time. Left uncorrected, "confirmed still present" would
-mislead anyone reading the git history into re-investigating a bug that no
-longer exists, or worse, avoiding auto-level+BLE bench time under the
-assumption it's known-broken.
+**Status, corrected 2026-07-17.** The auto-level sustained-move BLE drop
+(supervision timeout, `connection_closed reason=0x1008`, during a sustained
+hold from off-level) is **open and undiagnosed**. It reproduces on current
+code (bench-confirmed again 2026-07-17). 62773f6's original note —
+"confirmed still present and untouched — not part of this fix" — was and
+remains accurate. **This entry, as first written, asserted the opposite**
+("bench testing this session confirmed auto-level no longer drops the
+link") and that assertion was wrong. It is being corrected here rather than
+silently rewritten so the error is visible, not just erased.
 
-**The general rule, stated plainly so it doesn't have to be rediscovered:**
+**Why the earlier version of this entry was wrong — stated plainly, since
+this is the mistake, not a footnote to it.** It was written in `68d1d13`, a
+**docs-only commit** — three files under `docs/`, zero lines of code changed
+(`git show --stat 68d1d13`). Nothing changed in the firmware between 62773f6
+(where the bug was last actually observed and recorded as present) and
+`68d1d13` (where this entry declared it fixed) — there was no fixing build
+for a bench claim to have been run against, because no build existed that
+differed from the one 62773f6 already characterized as still dropping the
+link. The claimed mechanism wasn't just unverified, it was **inconsistent
+with the code**: it asserted `get_motor_faults()` ran "on literally every
+tick" during the auto-level runs 62773f6's own bench session found still
+dropping the link — but `ble_bed_service_tick()` early-returns whenever
+`status_subscriber_count == 0` (`ble_bed_service.c`, near the top of that
+function), and 62773f6's own root cause #1 is that `status_subscriber_count`
+stayed stuck at 0 after any reconnect using a resumed bond — precisely the
+state 62773f6 was diagnosing. `bed_status_get()`, and therefore
+`get_motor_faults()`, could not have executed during those runs. A call that
+never ran cannot have caused, and cannot have later stopped causing, the
+drop that was observed. What happened was a same-root-cause inference —
+plausible-sounding, tidy, wrong — written up as a verified fact without ever
+running the build it described.
+
+**Do not bisect `ef55454` (fault polling) or `62773f6` (notification-count
+fix) looking for a regression either one introduced into auto-level.** Both
+postdate a bug that was already present *at* 62773f6 (per 62773f6's own
+bench note); neither can be its cause. See the accelerometer-I2C-rate
+bisection (source-visible `BED_BISECT_ACCEL_I2C_RATE_LIMIT` flag,
+`auto_level.c`) for the active investigation into the real cause.
+
+**The general rule from the original version of this entry, unaffected by
+the correction above and still correct — kept verbatim:**
 
 - **Never call anything blocking from a BLE stack event callback**
   (`sl_bt_on_event` / `ble_bed_service_on_event` and anything they call
@@ -526,3 +544,76 @@ assumption it's known-broken.
   callback, or a new per-tick transaction on the accel's bus, should be
   treated as a specific, callable-out risk in any future review, not
   something that only gets caught by re-deriving this history from scratch.
+
+**New rule, added by this correction — this is the second citation defect in
+this document (the first being the stale-but-accurate 62773f6 note this
+entry originally mishandled the other direction), so it is being stated
+explicitly rather than left implicit:** **a fix is not "verified" until it
+has been bench-run on the build that actually contains it.** Same-root-cause
+reasoning — "these two symptoms look like they'd share a cause, and we fixed
+the cause" — produces a hypothesis worth testing, never a verification by
+itself, no matter how tidy the unifying story is. A docs commit recording a
+bench result must correspond to an actual bench run on the code as it stood
+at that commit; a docs commit must never *upgrade* a prior bench observation
+to a different conclusion without new bench evidence of its own. When those
+two things try to conflict, the bench observation wins and the docs commit
+is the thing that's wrong — as it was here.
+
+## 28. BLE bonding: a fresh pairing request against an existing bond auto-replaces it
+
+**The bug this fixes.** Bench-confirmed 2026-07-15: a peer whose address the
+firmware resolves to an existing bond (`sl_bt_evt_connection_opened`'s
+`bonding` field != `0xff`), but which has no matching bond of its own (a
+lost/forgotten/factory-reset phone, or a new phone), fails to pair —
+`sl_bt_evt_sm_bonding_failed reason=0x1205` (`SL_STATUS_BT_SMP_PAIRING_NOT_SUPPORTED`),
+phone disconnects (`reason=0x1013`, `REMOTE_USER_TERMINATED`). Verified this
+was a **permanent, customer-unrecoverable lockout**: no settings-mode
+gesture, no BLE command (every characteristic requires the very bonded link
+that's broken), and no silent stack-side eviction clears it. The only
+existing recovery was a manufacturer SWD/J-Link reflash with the bench-only
+`BLE_BENCH_WIPE_BONDS` flag enabled, wiping *all* bonds, not just the stuck
+one.
+
+**Decision.** A fresh pairing request from a peer that resolves to an
+existing bond MUST replace that bond, not fail. Implemented in
+`ble_bed_service.c` by setting `sl_bt_sm_configure()`'s bit 3
+(`SL_BT_SM_CONFIGURATION_BONDING_REQUEST_REQUIRED`), which makes
+`sl_bt_evt_sm_confirm_bonding` fire for every bonding attempt instead of
+never firing; the handler confirms unconditionally, which the event's own
+SDK doc describes as replacing an existing bond ("a bonding already exists
+... overwriting is a potential security risk").
+
+**Security analysis — why this is safe. Record this verbatim; do not
+re-litigate auto-replace without seeing this reasoning first.** The security
+boundary is #19's pairing window, not the replace policy. Auto-replace does
+not widen the attack surface: a stranger's phone resolves to no existing
+bond, so it becomes a *new* bond — which `set_bondable_mode(1)` already
+permits today regardless of replace policy. The narrow residual risk is an
+attacker spoofing an already-bonded phone's identity to force a re-pair —
+but that requires having already compromised that phone (its IRK), and Just
+Works pairing (this product's threat model, #19 — no display/passkey
+hardware, no MITM claim) provides no MITM protection either way, replace
+policy or not. Once #19 gates *all* bonding — new and replace alike — behind
+a physically-opened pairing window, auto-replace is safe by construction:
+physical access to the switch panel is the real gate, not whether an
+existing bond record happens to get overwritten. Auto-replace's actual
+benefit is removing a separate un-bond step for the user, not removing the
+need for physical access — that need doesn't go away and isn't being
+argued away here.
+
+**Status: implemented, not yet bench-verified as of this entry.** This was,
+and until confirmed on the bench remains, a **hypothesis** about the SDK's
+undocumented behavior with bit 3 clear: no text was found in the installed
+SiSDK 2026.6.0 headers stating outright that a bit-3-clear configuration
+auto-rejects a re-pair against an existing bond (the inference is well
+evidenced — see the investigation this decision is based on — but it is not
+a quoted guarantee). Given #27's correction immediately above, this status
+line is deliberately explicit rather than assumed away: do not treat this as
+resolved until an actual bench pairing test against a real stale-bond/
+no-bond mismatch has been run and reported.
+
+**Single decision point for #19.** The `confirm_bonding` handler
+(`ble_bed_service.c`) is deliberately the one place this logic lives: today
+it always confirms; when #19's physical pairing window lands, the same
+handler gains one condition (confirm only if the window is open, reject
+otherwise) rather than a second mechanism being built elsewhere.
