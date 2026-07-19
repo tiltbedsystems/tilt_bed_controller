@@ -303,6 +303,12 @@ the shipping end-state. Note the SiSDK 2025.12+ delivery change (modular
 Conan/SLT packaging) — install 2026.6.0 and build the stock SoC Empty
 sample as a standalone verification step before any porting begins.
 
+**Note, added 2026-07-19:** item 4's pre-BLE isolation pass
+(`REGRESSION_RECORD_D1.md`) was never run — BLE Stage B glue landed first —
+and is superseded for gating purposes by the post-BLE, phone-subscribed full
+pass recorded in `REGRESSION_RECORD_PRE_STAGEC.md`, which is the actual gate
+now in force for BLE Stage C.
+
 ## 21. Viewer auto-promotion
 
 Two connections maximum (#14): first bonded phone = CONTROL, second =

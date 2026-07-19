@@ -1,5 +1,15 @@
 # REGRESSION_RECORD_D1.md — D1 migration bench test record
 
+**Never run, and no longer runnable as scoped.** This record's precondition
+— a full pass against the migrated SDK *before any BLE glue is written* — was
+overtaken when BLE Stage B glue landed first (see DECISIONS #20's added
+note). It is left below as the empty template it always was, not backfilled;
+doing so after the fact would misrepresent what this file was for. **For the
+actual gate now in force (BLE Stage C), see
+[REGRESSION_RECORD_PRE_STAGEC.md](REGRESSION_RECORD_PRE_STAGEC.md)** — a full
+pass run with a phone bonded and subscribed throughout, on current
+(post-BLE) code.
+
 Test record for the Phase 6 gate of the D1 SDK migration (DECISIONS #20):
 the full [REGRESSION.md](REGRESSION.md) pass run once against the migrated
 SiSDK 2026.6.0 firmware, before any BLE glue is written. This is a working
