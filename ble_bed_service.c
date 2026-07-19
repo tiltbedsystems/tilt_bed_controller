@@ -187,14 +187,20 @@ static void track_connection_closed(uint8_t connection)
 // for a pairing/bonding PROCEDURE completing, not for simply re-establishing
 // encryption from an already-stored bond on reconnect, which does not repeat
 // the procedure). Idempotent: a connection that already holds a role hits
-// neither branch on a later call.
-static void assign_role_if_needed(uint8_t connection)
+// neither branch on a later call. Returns true only when this call is what
+// just assigned the role (either branch taken) - callers use this to seed
+// CCCD state exactly once per connection, right after the role that seed
+// depends on (control vs. viewer) actually exists.
+static bool assign_role_if_needed(uint8_t connection)
 {
   if (control_connection == SLOT_EMPTY) {
     control_connection = connection;
+    return true;
   } else if (viewer_connection == SLOT_EMPTY && connection != control_connection) {
     viewer_connection = connection;
+    return true;
   }
+  return false;
 }
 
 static void update_status_subscriber_count(void)
@@ -205,6 +211,48 @@ static void update_status_subscriber_count(void)
     sl_sleeptimer_stop_timer(&status_notify_timer);
   }
   status_subscriber_count = count;
+}
+
+// Seeds control_status_subscribed/viewer_status_subscribed from the client's
+// actual CCCD, read directly from the stack, instead of relying solely on
+// sl_bt_evt_gatt_server_characteristic_status - which per its own doc fires
+// only on a CCCD CHANGE, not as a current-state event. On a resumed bond the
+// CCCD may already be set (restored by the stack) with no change event to
+// catch it, leaving status_subscriber_count stuck at 0 while the client
+// believes it's subscribed and ble_bed_service_tick() early-returns forever.
+// Called once, immediately after a connection is freshly assigned a role
+// (assign_role_if_needed() returning true) - reads ground truth so it's
+// correct whether or not the stack restores the CCCD, and closes the
+// ordering race where a characteristic_status event could otherwise arrive
+// before the role exists to seed against.
+static void seed_status_subscription_from_cccd(uint8_t connection)
+{
+  uint16_t flags = 0;
+  sl_status_t sc = sl_bt_gatt_server_read_client_configuration(connection, gattdb_bed_status, &flags);
+
+  // Permanent probe, not bisection scaffolding: this is the one piece of
+  // evidence that tells the bench whether the stack actually restores the
+  // CCCD across a resumed-bond reconnect, which is the fact this fix
+  // depends on. Same justification as the existing security-lifecycle
+  // prints - keep it.
+#if BLE_DEBUG_SECURITY_LOG
+  printf("BLE: cccd_seed conn=%u bed_status=0x%04x sc=0x%04x\r\n",
+         connection, flags, (unsigned)sc);
+#endif
+
+  if (sc == SL_STATUS_OK && (flags & sl_bt_gatt_server_notification)) {
+    if (connection == control_connection) {
+      control_status_subscribed = true;
+    } else if (connection == viewer_connection) {
+      viewer_status_subscribed = true;
+    }
+    update_status_subscriber_count();
+    // Required, not optional: update_status_subscriber_count() only ever
+    // STOPS the notify timer (#24), it never starts one. Without this, a
+    // seeded-subscribed idle bed would send nothing until the next
+    // flags-change edge - exactly the bug this function exists to close.
+    status_notify_due = true;
+  }
 }
 
 static void handle_connection_closed(uint8_t connection)
@@ -407,7 +455,14 @@ void ble_bed_service_on_event(sl_bt_msg_t *evt)
              evt->data.evt_sm_bonded.bonding,
              evt->data.evt_sm_bonded.security_mode);
 #endif
-      assign_role_if_needed(evt->data.evt_sm_bonded.connection);
+      if (assign_role_if_needed(evt->data.evt_sm_bonded.connection)) {
+        // Fresh pairing - the CCCD read will normally return 0 here (the
+        // client hasn't subscribed yet), a harmless no-op. Seeded anyway for
+        // symmetry with the resumed-bond call site below and so role
+        // assignment and CCCD seeding always happen together, not
+        // conditionally on which event assigned the role.
+        seed_status_subscription_from_cccd(evt->data.evt_sm_bonded.connection);
+      }
       break;
 
     // An sl_status_t code - see sl_status.h SL_STATUS_BT_SMP_* for
@@ -455,7 +510,12 @@ void ble_bed_service_on_event(sl_bt_msg_t *evt)
       printf("BLE: connection_parameters conn=%u interval=%u security_mode=%u\r\n",
              params->connection, params->interval, params->security_mode);
       if (params->security_mode != sl_bt_connection_mode1_level1) {
-        assign_role_if_needed(params->connection);
+        if (assign_role_if_needed(params->connection)) {
+          // The resumed-bond path: sm_bonded does not fire here (see the
+          // comment above this case), so this is the only place a resumed
+          // connection's CCCD ever gets seeded.
+          seed_status_subscription_from_cccd(params->connection);
+        }
       }
       break;
     }
@@ -483,6 +543,17 @@ void ble_bed_service_on_event(sl_bt_msg_t *evt)
           control_status_subscribed = subscribed;
         } else if (cs->connection == viewer_connection) {
           viewer_status_subscribed = subscribed;
+        } else {
+          // Matches neither role slot - dropped silently before this log
+          // line existed. Not re-architected to be keyed by connection
+          // handle here (that would touch #21's viewer->control promotion
+          // logic in handle_connection_closed(), scoped out of this task);
+          // this is visibility only, so a real occurrence isn't invisible.
+#if BLE_DEBUG_SECURITY_LOG
+          printf("BLE: characteristic_status DROPPED conn=%u client_config_flags=0x%04x "
+                 "(matches neither control nor viewer connection)\r\n",
+                 cs->connection, cs->client_config_flags);
+#endif
         }
         update_status_subscriber_count();
 
