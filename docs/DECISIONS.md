@@ -477,6 +477,8 @@ interrupt-latched path first.
 
 ## 27. Auto-level's BLE-drop bug is OPEN and UNDIAGNOSED — this entry previously claimed otherwise, and that claim was wrong
 
+**RESOLVED — diagnosed and fixed, see #30.**
+
 **Status, corrected 2026-07-17.** The auto-level sustained-move BLE drop
 (supervision timeout, `connection_closed reason=0x1008`, during a sustained
 hold from off-level) is **open and undiagnosed**. It reproduces on current
@@ -685,3 +687,47 @@ calibrated against whatever the loop rate happened to be on the bench the
 day the number was chosen, and silently drifts every time loop timing
 changes thereafter, with no compiler warning and no test failure to catch
 it.
+
+## 30. Auto-level's BLE-drop bug — root cause confirmed by controlled A/B, fixed
+
+**Root cause, confirmed, not inferred.** Unconditional per-pass blocking
+accel I2C (`accel_get_xyz_raw()` via `read_accel()`) during auto-level's
+motor-on EM0 free-spin (`app_is_ok_to_sleep()` vetoes sleep while a motor is
+on) accumulates enough bus occupancy on `sl_i2cspm_on_board` to starve the
+BLE radio past its 1000 ms supervision timeout on a sustained hold
+(`connection_closed reason=0x1008`). Confirmed by a controlled A/B on a
+single binary, only the rate-limit flag differing: flag off → disconnects
+reproduce; flag on → disconnects gone. Back-calculated bus occupancy: ~60%
+with the accel I2C burst running every pass, ~13% rate-limited to the
+sensor's actual 100 Hz output rate. This is what #27's own methodology rule
+demanded and got — a fix is not verified until bench-run, here A/B-confirmed,
+on the build that contains it. This entry is that verification; #27 is
+marked resolved above rather than rewritten, per that same rule.
+
+**Hang hypothesis explicitly refuted, not just unconfirmed.** Before landing
+on occupancy as the mechanism, a competing hypothesis was tested and ruled
+out: that a NACK/bus-glitch caused `I2CSPM_Transfer()` to silently spin its
+bounded retry loop (`SL_I2CSPM_TRANSFER_TIMEOUT` = 300000 iterations,
+confirmed by reading `platform/driver/i2cspm/src/sl_i2cspm.c` in the
+installed SiSDK 2026.6.0) past the EFM_ASSERT that compiles out in a release
+build. Bench instrumentation on the actual transfer path found **zero
+failures of any kind** (NACK, bus error, arbitration lost, usage fault, SW
+fault, or timeout) and a **measured max transfer duration of ~1.4 ms**, far
+under any timeout threshold. The bug is bus occupancy, not bus reliability.
+
+**Fix.** `auto_level.c`'s `read_accel()` rate-limits the I2C burst itself to
+`ACCEL_I2C_MIN_INTERVAL_MS` (10 ms, matching the MC3479's 100 Hz output rate
+— decimate-by-10 in `init_accel()`), reusing the cached `accel_vector[]`
+between real reads. Everything downstream of the raw read — magnitude,
+atan2, LPF, and `accel_running_average()`'s array/window — is unchanged and
+still runs every super-loop pass on whichever sample is current; only the
+I2C transaction itself is gated. This is deliberately the smallest change
+that fixes the confirmed root cause.
+
+**What this fix does NOT do — stays OPEN, tracked under #29.** Caching the
+raw sample between I2C reads does not make `NUM_ACCEL_READINGS` or
+`accel_alpha` any less loop-rate-dependent — the averaging window is still
+"130 passes," not "N milliseconds." #29's time-based redesign of
+`accel_running_average()`'s window is separate, control-behavior-changing
+work, explicitly not part of this fix and not required to close out the BLE
+drop.

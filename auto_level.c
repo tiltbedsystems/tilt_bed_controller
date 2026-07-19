@@ -25,6 +25,16 @@
 #include "auto_level.h"
 #include "debug_capture.h"
 
+// Accel I2C burst is rate-limited to the MC3479's actual output rate rather
+// than run unconditionally on every super-loop pass. During auto-level the
+// loop free-spins in EM0 (app_is_ok_to_sleep() vetoes sleep while a motor is
+// on), so an ungated per-pass read burned ~60% of loop time in blocking I2C
+// on sl_i2cspm_on_board - enough to starve the BLE radio past its 1000 ms
+// supervision timeout on a sustained hold (connection_closed reason=0x1008).
+// Root-caused and fixed by a controlled A/B bench test on this exact code
+// path (DECISIONS.md #30) - not inferred, measured.
+#define ACCEL_I2C_MIN_INTERVAL_MS 10 // Matches the MC3479's 100 Hz output rate (decimate-by-10, init_accel()) - sampling faster only returns duplicate data
+
 /*******************************************************************************
  *******************************   DEFINES   ***********************************
  ******************************************************************************/
@@ -187,8 +197,18 @@ int32_t accel_low_pass_filter(int32_t new_value, int32_t old_value, float accel_
 // Read data and convert to usable values
 void read_accel(){
 
-  // Read raw data from accel
-  accel_get_xyz_raw(&accel_vector[0]);
+  // Read raw data from accel, rate-limited to ACCEL_I2C_MIN_INTERVAL_MS
+  // (see comment above). Between real reads, reuse the cached accel_vector[]
+  // from the last one - the sensor hasn't produced a new sample yet, so this
+  // is not stale data, it's the same sample a same-rate poll would have
+  // returned. Everything below still runs every call at full loop rate on
+  // whichever sample is current.
+  static uint32_t last_accel_i2c_tick = 0;
+  uint32_t now = sl_sleeptimer_get_tick_count();
+  if (sl_sleeptimer_tick_to_ms(now - last_accel_i2c_tick) >= ACCEL_I2C_MIN_INTERVAL_MS) {
+    last_accel_i2c_tick = now;
+    accel_get_xyz_raw(&accel_vector[0]);
+  }
   x_accel_vector = accel_vector[0];
   y_accel_vector = accel_vector[1];
   z_accel_vector = accel_vector[2];
