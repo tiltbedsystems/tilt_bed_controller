@@ -219,6 +219,94 @@ void app_stop_all(void)
   active_switch = OFF;
 }
 
+/*******************************************************************************
+ *** Output application for APP-sourced commands (BLE Stage C)
+ *
+ * The switch path gets its physical outputs from switch_input.c's
+ * process_outputs(), which is driven by app_ui_interrupt + switch_pressed -
+ * i.e. a real switch edge. An app command has neither, so bed_move_start()
+ * and friends latch direction and active_switch but NOTHING ever energises
+ * the motors or lights the LEDs. These helpers do what the matching branch of
+ * process_outputs() does, and ble_bed_service.c calls them right after the
+ * corresponding bed_control verb reports success.
+ *
+ * They deliberately live here rather than in the BLE module: this is where
+ * the switch path's equivalents live, so the two stay side by side and a
+ * change to one is obvious next to the other.
+ ******************************************************************************/
+
+static side_of_bed_t target_to_side(bed_target_t target)
+{
+  switch (target) {
+    case BED_TARGET_HEAD:  return HEAD;
+    case BED_TARGET_LEFT:  return LEFT;
+    case BED_TARGET_RIGHT: return RIGHT;
+    case BED_TARGET_FOOT:  return FOOT;
+    case BED_TARGET_ALL:   break; // caller handles ALL separately
+  }
+  return HEAD; // unreachable
+}
+
+// Mirrors process_outputs()'s press branches: LED_BLUE + all motors for an
+// ALL move, LED_GREEN + the one pair otherwise.
+void app_apply_move_outputs(bed_target_t target)
+{
+  if (target == BED_TARGET_ALL) {
+    set_LED_on(LED_BLUE);
+    set_all_motors_on();
+  } else {
+    set_LED_on(LED_GREEN);
+    set_dual_motors_on(target_to_side(target));
+  }
+}
+
+// Mirrors process_outputs()'s SWITCH_AUTO_LEVEL press branch. The auto-level
+// loop in app.c drives the motors and the blinking LED from here on.
+void app_apply_auto_level_start_outputs(void)
+{
+  set_LED_on(LED_RED);
+  set_all_motors_off();
+}
+
+// Mirrors process_outputs()'s SWITCH_BED_LIGHTS branch, then returns the bed
+// to idle.
+void app_apply_lights_outputs(void)
+{
+  if (bedlights_on) {
+    set_LED_on(LED_AMBER);
+    set_underbed_lighting_on();
+  } else {
+    set_LED_off(LED_AMBER);
+    set_underbed_lighting_off();
+  }
+  app_release_active_switch();
+}
+
+// Mirrors process_outputs()'s RELEASE branches: motors and LEDs off, bed
+// back to idle. Used for app MOVE_STOP and AUTO_LEVEL_STOP.
+void app_apply_stop_outputs(void)
+{
+  set_all_motors_off();
+  for (uint8_t i = 0; i < NUM_MOTORS; i++) {
+    motor_state[i].motor_on = false;
+  }
+  set_all_LED_off();
+  if (bedlights_on) {
+    set_LED_on(LED_AMBER); // under-bed lighting survives a move, as it does a collision
+  }
+  app_release_active_switch();
+}
+
+// No switch-release event will ever arrive for an app command, so the app
+// path has to return active_switch to OFF itself. This is not cosmetic:
+// app_bed_is_idle() is what lets bed_control release the source lock, so
+// without it a single app command would leave APP holding the lock forever
+// and the wall switch permanently force-stopped (DECISIONS.md #12).
+void app_release_active_switch(void)
+{
+  active_switch = OFF;
+}
+
 bool app_bed_is_idle(void)
 {
   return (active_switch == OFF) && (!in_settings_mode);

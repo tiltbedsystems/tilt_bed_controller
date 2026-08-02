@@ -2,18 +2,25 @@
  * ble_bed_service.c
  *
  * See ble_bed_service.h. Advertising bring-up, bonding, per-connection
- * CONTROL/VIEWER role tracking, Bed Status telemetry, and - as of the tilt
- * telemetry work (DECISIONS.md #33) - the first Command characteristic write
- * handler.
+ * CONTROL/VIEWER role tracking, Bed Status telemetry, and - as of Stage C
+ * (DECISIONS.md #34) - the full Command characteristic write path: all seven
+ * opcodes of BLE_GATT_DESIGN.md #4, the #5 dead-man watchdog, and #14 role
+ * arbitration.
  *
- * That write path handles exactly ONE opcode, REFRESH_TILT (0x07), which
- * commands no motion: it opens a tilt sampling burst and nothing else. Every
- * motion opcode in BLE_GATT_DESIGN.md #4 (0x01-0x06) is answered
- * REJECTED_INVALID. There is still no code path that can drive a motor over
- * BLE, and that remains deliberate - the write path was opened with a
- * harmless opcode specifically so the plumbing (decode, validate, result
- * notify, main-loop deferral) could be proven on the bench before anything
- * that moves the bed is wired to it.
+ * This module decodes and arbitrates; it does not reimplement bed logic.
+ * Every opcode routes through the existing bed_control.c verbs with
+ * BED_SOURCE_APP, the same verbs a physical switch press calls, so the
+ * two-source lock (DECISIONS #12) and the collision/limit supervision
+ * beneath it (#13) apply to app commands automatically.
+ *
+ * TWO RULES THAT MUST SURVIVE ANY EDIT HERE:
+ *   1. The stack callback does NO work - it copies bytes, sets a flag, and
+ *      returns. Everything else happens in main-loop context. Every opcode
+ *      touches I2C (motors and LEDs are behind an expander), and blocking
+ *      I2C inside a Bluetooth callback is the confirmed mechanism behind
+ *      this project's reason=0x1008 supervision-timeout drops
+ *      (DECISIONS #27/#30).
+ *   2. STOP_ALL never shares the deferred-command slot. See its flag below.
  *
  *  Created on: Jul 12, 2026
  */
@@ -27,7 +34,10 @@
 #include "gatt_db.h"
 #include "sl_sleeptimer.h"
 
-#include "auto_level.h" // tilt_telemetry_arm_burst() - triggers T1 and T2
+#include "auto_level.h"              // tilt_telemetry_arm_burst() - triggers T1 and T2
+#include "bed_actions.h"             // app_stop_all(), the app-path output helpers
+#include "bed_control.h"             // the command verbs every opcode routes through
+#include "motor_current_functions.h" // any_collision - cancels the move watchdog
 
 // Security-lifecycle diagnostic logging (bonding/connection state prints
 // below, at sl_bt_evt_sm_bonded/sm_bonding_failed/sm_confirm_bonding/
@@ -147,15 +157,29 @@ void ble_bed_service_encode_status(const bed_status_t *in, bool tilt_fresh, uint
 #define CMD_OFS_ARG1       2
 #define CMD_OFS_SEQ        3
 
-// Only opcode implemented so far. 0x01-0x06 are specified in #4 but not
-// built; they are REJECTED_INVALID rather than silently swallowed, so the
-// app can tell "not implemented yet" from "lost".
-#define CMD_OPCODE_REFRESH_TILT 0x07
+// Opcodes (BLE_GATT_DESIGN.md #4). All implemented as of Stage C.
+#define CMD_OPCODE_MOVE_START        0x01
+#define CMD_OPCODE_MOVE_STOP         0x02
+#define CMD_OPCODE_AUTO_LEVEL_START  0x03
+#define CMD_OPCODE_AUTO_LEVEL_STOP   0x04
+#define CMD_OPCODE_LIGHTS_SET        0x05
+#define CMD_OPCODE_STOP_ALL          0x06
+#define CMD_OPCODE_REFRESH_TILT      0x07
 
 // Command Result codes (BLE_GATT_DESIGN.md #7).
-#define CMD_RESULT_ACCEPTED         0x00
-#define CMD_RESULT_REJECTED_INVALID 0x04
-#define CMD_RESULT_LEN              2
+#define CMD_RESULT_ACCEPTED                   0x00
+#define CMD_RESULT_FORCE_STOPPED_OTHER_SOURCE 0x01
+#define CMD_RESULT_REJECTED_VIEWER            0x02
+#define CMD_RESULT_REJECTED_SETTINGS_MODE     0x03
+#define CMD_RESULT_REJECTED_INVALID           0x04
+#define CMD_RESULT_WATCHDOG_STOP              0x05
+#define CMD_RESULT_LEN                        2
+
+// Dead-man watchdog (BLE_GATT_DESIGN.md #5). Milliseconds via sleeptimer,
+// never loop passes (DECISIONS.md #2). The app repeats MOVE_START every
+// 100 ms while its button is held, so 300 ms tolerates two lost writes before
+// stopping the bed.
+#define MOVE_WATCHDOG_MS 300
 
 static uint8_t advertising_set_handle = 0xff;
 
@@ -174,10 +198,42 @@ static uint8_t last_sent_status[gattdb_bed_status_len];
 // Deferred Command write. The stack callback ONLY fills these in and returns;
 // every decision and every side effect happens later, in main-loop context,
 // from process_pending_command(). See the handler for why (DECISIONS #27).
+//
+// This slot is last-write-wins: a second write arriving before the main loop
+// drains it overwrites the first. That is acceptable for every opcode EXCEPT
+// STOP_ALL, because the rest are self-correcting - the app repeats MOVE_START
+// every 100 ms, and a lost MOVE_STOP is caught by the watchdog within 300 ms.
 static volatile bool    command_pending = false;
 static volatile uint8_t pending_command[CMD_LEN];
 static volatile uint8_t pending_command_len = 0;   // as written, before clamping
 static volatile uint8_t pending_command_conn = SLOT_EMPTY;
+
+// STOP_ALL gets its own flag and is NEVER routed through the shared slot.
+// It is sent once, it is the app's big red button, and nothing corrects for
+// it being lost. Set only in the Bluetooth handler, cleared only by the main
+// loop after the stop has actually been performed - no other path may clear
+// it, so no other command can displace a pending stop.
+static volatile bool    stop_all_pending = false;
+static volatile uint8_t stop_all_seq  = 0;
+static volatile uint8_t stop_all_conn = SLOT_EMPTY;
+
+// Control connection dropped while APP held the bed. Handled in the main
+// loop, not in the disconnect callback: app_stop_all() drives LEDs over I2C
+// on sl_i2cspm_on_board, and blocking I2C inside a stack callback is the
+// confirmed cause of this project's reason=0x1008 drops (DECISIONS #27/#30).
+static volatile bool disconnect_stop_pending = false;
+
+// Dead-man watchdog state (BLE_GATT_DESIGN.md #5).
+static sl_sleeptimer_timer_handle_t move_watchdog_timer;
+static volatile bool move_watchdog_expired = false;  // set in timer ISR context
+static bool    move_watchdog_armed = false;
+static uint8_t last_move_seq = 0;                    // echoed on WATCHDOG_STOP
+
+// The app-sourced move currently believed to be running, so a repeat with a
+// DIFFERENT target/dir can be turned into MOVE_STOP + MOVE_START (#4).
+static bool            app_move_active = false;
+static bed_target_t    app_move_target = BED_TARGET_HEAD;
+static bed_direction_t app_move_dir    = BED_DIR_UP;
 
 static void start_advertising(void)
 {
@@ -274,23 +330,97 @@ static void send_command_result(uint8_t connection, uint8_t seq, uint8_t result)
   (void)sc; // best-effort: no-op if the client never subscribed to results
 }
 
+/*******************************************************************************
+ *** Dead-man watchdog (BLE_GATT_DESIGN.md #5)
+ *
+ * Armed and refreshed only by MOVE_START from the control connection. AUTO_
+ * LEVEL and LIGHTS are latched commands and never arm it (#4). Cancelled by
+ * MOVE_STOP, STOP_ALL, a collision, or the bed going idle on its own (a limit
+ * stop). Expiry is a clean full stop, not a partial one.
+ ******************************************************************************/
+
+static void move_watchdog_callback(sl_sleeptimer_timer_handle_t *handle, void *data)
+{
+  (void)handle;
+  (void)data;
+  move_watchdog_expired = true; // ISR context - flag only, the tick does the work
+}
+
+static void move_watchdog_arm(void)
+{
+  move_watchdog_armed = true;
+  move_watchdog_expired = false;
+  sl_sleeptimer_restart_timer(&move_watchdog_timer,
+                               sl_sleeptimer_ms_to_tick(MOVE_WATCHDOG_MS),
+                               move_watchdog_callback, NULL, 0, 0);
+}
+
+static void move_watchdog_cancel(void)
+{
+  move_watchdog_armed = false;
+  move_watchdog_expired = false;
+  sl_sleeptimer_stop_timer(&move_watchdog_timer);
+}
+
+// Main-loop context. Called every tick.
+static void service_move_watchdog(void)
+{
+  if (!move_watchdog_armed) {
+    return;
+  }
+
+  // The move ended without the app telling us: a collision trip, or a limit
+  // stop that returned the bed to idle. Nothing left to guard.
+  if (any_collision || app_bed_is_idle()) {
+    move_watchdog_cancel();
+    app_move_active = false;
+    return;
+  }
+
+  if (!move_watchdog_expired) {
+    return;
+  }
+
+  // No MOVE_START repeat for MOVE_WATCHDOG_MS - the app is gone, the phone
+  // slept, or the link stalled. Full clean stop, then tell the app why if it
+  // is still there to hear it.
+  move_watchdog_cancel();
+  app_move_active = false;
+  app_stop_all();
+  send_command_result(control_connection, last_move_seq, CMD_RESULT_WATCHDOG_STOP);
+}
+
+/*******************************************************************************
+ *** Command dispatch
+ ******************************************************************************/
+
 // Acts on a Command write, in MAIN-LOOP context, from ble_bed_service_tick().
 //
 // Everything this function does was deliberately kept out of the stack
-// callback. That is not stylistic: DECISIONS.md #27/#30. A blocking accel
-// I2C read reached from inside a Bluetooth callback is precisely the
-// mechanism that starved the radio past its 1000 ms supervision timeout and
-// produced the reason=0x1008 drops this project has already chased twice.
-// REFRESH_TILT's whole job is to cause accelerometer reads, so handling it
-// inline in the callback would have rebuilt that bug on purpose.
-//
-// Only one write is buffered. A second arriving before the tick drains the
-// first overwrites it - acceptable while REFRESH_TILT is the only opcode
-// (two refreshes and one refresh are the same thing, and the burst extends
-// rather than stacks), but it must be revisited before MOVE_START, whose
-// 100 ms repeat cadence and dead-man semantics make a dropped write matter.
+// callback. That is not stylistic: DECISIONS.md #27/#30. Blocking work
+// reached from inside a Bluetooth callback - an accel I2C read, an expander
+// write to drive a motor or an LED - is precisely the mechanism that starved
+// the radio past its 1000 ms supervision timeout and produced the
+// reason=0x1008 drops this project has already chased twice. Every opcode
+// here touches I2C, so every one of them has to be handled from the loop.
 static void process_pending_command(void)
 {
+  // STOP_ALL first, unconditionally, before anything else can be considered.
+  // Its own flag, so a later command in the shared slot cannot displace it.
+  if (stop_all_pending) {
+    uint8_t seq  = stop_all_seq;
+    uint8_t conn = stop_all_conn;
+    stop_all_pending = false;
+
+    move_watchdog_cancel();
+    app_move_active = false;
+    app_stop_all();
+
+    // Accepted from ANY role - control or viewer. DECISIONS #12's
+    // stop-from-anyone rule, and #4's explicit carve-out.
+    send_command_result(conn, seq, CMD_RESULT_ACCEPTED);
+  }
+
   if (!command_pending) {
     return;
   }
@@ -310,21 +440,134 @@ static void process_pending_command(void)
   // A short write has no trustworthy seq field. Echo 0 rather than a byte
   // that was never sent; the app sees REJECTED_INVALID either way.
   uint8_t seq = (len == CMD_LEN) ? cmd[CMD_OFS_SEQ] : 0;
+
+  if (len != CMD_LEN) {
+    send_command_result(conn, seq, CMD_RESULT_REJECTED_INVALID);
+    return;
+  }
+
+  uint8_t opcode = cmd[CMD_OFS_OPCODE];
+  uint8_t arg0   = cmd[CMD_OFS_ARG0];
+  uint8_t arg1   = cmd[CMD_OFS_ARG1];
+
+  // REFRESH_TILT is not a motion command: accepted from either role and in
+  // settings mode, where the sampler stands down and it is harmlessly
+  // absorbed. Handled before the arbitration gates for that reason (#4).
+  if (opcode == CMD_OPCODE_REFRESH_TILT) {
+    if (arg0 != 0 || arg1 != 0) {
+      send_command_result(conn, seq, CMD_RESULT_REJECTED_INVALID);
+      return;
+    }
+    tilt_telemetry_arm_burst();
+    send_command_result(conn, seq, CMD_RESULT_ACCEPTED);
+    return;
+  }
+
+  // Everything below is motion-class and subject to arbitration.
+
+  // A viewer is a window, not a second source (#14). STOP_ALL never reaches
+  // here - it is handled above, from any role.
+  if (conn != control_connection) {
+    send_command_result(conn, seq, CMD_RESULT_REJECTED_VIEWER);
+    return;
+  }
+
+  if (app_in_settings_mode()) {
+    send_command_result(conn, seq, CMD_RESULT_REJECTED_SETTINGS_MODE);
+    return;
+  }
+
   uint8_t result = CMD_RESULT_REJECTED_INVALID;
 
-  if (len == CMD_LEN
-      && cmd[CMD_OFS_OPCODE] == CMD_OPCODE_REFRESH_TILT
-      && cmd[CMD_OFS_ARG0] == 0
-      && cmd[CMD_OFS_ARG1] == 0) {
-    // T2. Accepted from EITHER role, and accepted in settings mode - see the
-    // arbitration note in BLE_GATT_DESIGN.md #4. It commands no motion, and
-    // the fresher telemetry it produces is notified to both connections
-    // anyway, so rejecting a viewer would only deny it a better reading of
-    // data it is already being sent. In settings mode the sampler's gate 2c
-    // stands down while the zero-level capture runs, so the refresh is
-    // harmlessly absorbed.
-    tilt_telemetry_arm_burst();
-    result = CMD_RESULT_ACCEPTED;
+  switch (opcode) {
+    case CMD_OPCODE_MOVE_START: {
+      if (arg0 > (uint8_t)BED_TARGET_ALL || arg1 > (uint8_t)BED_DIR_UP) {
+        break; // out-of-range target or direction
+      }
+      bed_target_t    target = (bed_target_t)arg0;
+      bed_direction_t dir    = (bed_direction_t)arg1;
+
+      // A repeat with a DIFFERENT target/dir is MOVE_STOP then MOVE_START
+      // (#4) - not a direction change under a running move.
+      if (app_move_active && (target != app_move_target || dir != app_move_dir)) {
+        bed_move_stop(BED_SOURCE_APP);
+        app_apply_stop_outputs();
+        app_move_active = false;
+      }
+
+      if (!app_move_active) {
+        if (!bed_move_start(BED_SOURCE_APP, target, dir)) {
+          // The wall switch holds the lock; bed_control turned this into a
+          // full stop instead (DECISIONS #12).
+          move_watchdog_cancel();
+          result = CMD_RESULT_FORCE_STOPPED_OTHER_SOURCE;
+          break;
+        }
+        app_apply_move_outputs(target);
+        app_move_active = true;
+        app_move_target = target;
+        app_move_dir    = dir;
+      }
+
+      // Both a fresh start and an identical repeat refresh the watchdog.
+      last_move_seq = seq;
+      move_watchdog_arm();
+      result = CMD_RESULT_ACCEPTED;
+      break;
+    }
+
+    case CMD_OPCODE_MOVE_STOP:
+      if (arg0 != 0 || arg1 != 0) {
+        break;
+      }
+      move_watchdog_cancel();
+      app_move_active = false;
+      bed_move_stop(BED_SOURCE_APP); // stop-class: always reports true
+      app_apply_stop_outputs();
+      result = CMD_RESULT_ACCEPTED;
+      break;
+
+    case CMD_OPCODE_AUTO_LEVEL_START:
+      if (arg0 != 0 || arg1 != 0) {
+        break;
+      }
+      // Latched (#12): no watchdog. Drop any move watchdog still armed.
+      move_watchdog_cancel();
+      app_move_active = false;
+      if (!bed_auto_level_start(BED_SOURCE_APP)) {
+        result = CMD_RESULT_FORCE_STOPPED_OTHER_SOURCE;
+        break;
+      }
+      app_apply_auto_level_start_outputs();
+      result = CMD_RESULT_ACCEPTED;
+      break;
+
+    case CMD_OPCODE_AUTO_LEVEL_STOP:
+      if (arg0 != 0 || arg1 != 0) {
+        break;
+      }
+      bed_auto_level_stop(BED_SOURCE_APP); // stop-class: always reports true
+      app_apply_stop_outputs();
+      result = CMD_RESULT_ACCEPTED;
+      break;
+
+    case CMD_OPCODE_LIGHTS_SET:
+      if (arg0 > 1 || arg1 != 0) {
+        break;
+      }
+      // Latched, no watchdog, no motion.
+      if (!bed_lights_set(BED_SOURCE_APP, arg0 == 1)) {
+        result = CMD_RESULT_FORCE_STOPPED_OTHER_SOURCE;
+        break;
+      }
+      app_apply_lights_outputs();
+      result = CMD_RESULT_ACCEPTED;
+      break;
+
+    default:
+      // Unknown opcode. STOP_ALL cannot land here (own flag), REFRESH_TILT
+      // returned above.
+      break;
   }
 
   send_command_result(conn, seq, result);
@@ -377,6 +620,18 @@ static void handle_connection_closed(uint8_t connection)
   track_connection_closed(connection);
 
   if (connection == control_connection) {
+    // BLE_GATT_DESIGN.md #5, implemented exactly as written: the control
+    // connection dropping while APP holds the bed is a full clean stop, NOT
+    // bed_move_stop(). bed_move_stop() would leave a latched auto-level run
+    // going with nobody connected to stop it.
+    //
+    // Flagged, not done here: this is the disconnect callback, and
+    // app_stop_all() drives LEDs over I2C. Blocking I2C in a stack callback
+    // is DECISIONS #27/#30's confirmed radio-starvation mechanism.
+    if (bed_active_source() == BED_SOURCE_APP) {
+      disconnect_stop_pending = true;
+    }
+
     control_connection = SLOT_EMPTY;
     control_status_subscribed = false;
 
@@ -458,11 +713,21 @@ bool ble_bed_service_status_subscribed(void)
 
 void ble_bed_service_tick(void)
 {
+  // Control link dropped mid-command (BLE_GATT_DESIGN.md #5). Deferred out
+  // of the disconnect callback; done here, first, before anything else.
+  if (disconnect_stop_pending) {
+    disconnect_stop_pending = false;
+    move_watchdog_cancel();
+    app_move_active = false;
+    app_stop_all();
+  }
+
   // Drained BEFORE the subscriber check: a Command write is valid from a
   // bonded connection whether or not it subscribed to Bed Status, and its
   // Command Result must still be sent. Only the telemetry notify below is
   // gated on having a subscriber.
   process_pending_command();
+  service_move_watchdog();
 
   if (status_subscriber_count == 0) {
     return; // #24: no subscribers - no notify traffic, no accel-sampling gate to feed yet
@@ -680,6 +945,18 @@ void ble_bed_service_on_event(sl_bt_msg_t *evt)
           &evt->data.evt_gatt_server_attribute_value;
 
       if (av->attribute != gattdb_command) {
+        break;
+      }
+
+      // STOP_ALL never goes in the shared slot. It is sent once, nothing
+      // corrects for losing it, and a MOVE_START repeat arriving in the same
+      // tick would otherwise overwrite it. Own flag, cleared only by the main
+      // loop once the stop has actually happened.
+      if (av->value.len == CMD_LEN
+          && av->value.data[CMD_OFS_OPCODE] == CMD_OPCODE_STOP_ALL) {
+        stop_all_seq  = av->value.data[CMD_OFS_SEQ];
+        stop_all_conn = av->connection;
+        stop_all_pending = true;
         break;
       }
 

@@ -100,14 +100,19 @@ offset 3  seq      u8   rolling per-connection sequence number
 | 0x04 | AUTO_LEVEL_STOP | — | — | `bed_auto_level_stop(BED_SOURCE_APP)`. |
 | 0x05 | LIGHTS_SET | 0 off / 1 on | — | `bed_lights_set(BED_SOURCE_APP, …)`. Latched. |
 | 0x06 | STOP_ALL | — | — | Explicit full stop (maps to the `app_stop_all()` path: motors + auto-level + LEDs). The app's big red button. Always accepted from **any** role, control or viewer — this is the BLE embodiment of the stop-from-anyone rule (#12). |
-| 0x07 | REFRESH_TILT | 0 | 0 | **Implemented.** Opens a tilt sampling burst (DECISIONS #33, trigger T2) so the app can pull a fresh angle on demand. **Commands no motion, cancels no motion.** Accepted from **any** role and in settings mode — see the arbitration note. Both args must be 0; anything else is REJECTED_INVALID. |
+| 0x07 | REFRESH_TILT | 0 | 0 | Opens a tilt sampling burst (DECISIONS #33, trigger T2) so the app can pull a fresh angle on demand. **Commands no motion, cancels no motion.** Accepted from **any** role and in settings mode — see the arbitration note. Both args must be 0; anything else is REJECTED_INVALID. |
 
-**Implementation status.** 0x07 is the only opcode built. 0x01–0x06 are
-specified but not implemented and are answered `REJECTED_INVALID` (0x04) —
-deliberately, so the app can tell "not implemented yet" from "write lost".
-The write path was opened with a non-motion opcode on purpose: it proves the
-whole chain (decode, validate, defer to main loop, Command Result notify)
-on the bench before anything that can move the bed is wired to it.
+**Implementation status: all seven opcodes are implemented** (Stage C,
+DECISIONS #34). Out-of-range args are `REJECTED_INVALID`, as is any write
+that is not exactly 4 bytes.
+
+`STOP_ALL` does not share the deferred-command slot the other opcodes use.
+That slot is last-write-wins, which is safe for everything that is
+self-correcting — a lost MOVE_START is re-sent 100 ms later, a lost MOVE_STOP
+is caught by the watchdog inside 300 ms — but STOP_ALL is sent once and
+nothing corrects for losing it. It has a dedicated flag, set in the Bluetooth
+handler and cleared only by the main loop after the stop has actually been
+performed, so no later command can displace a pending stop.
 
 Notes:
 

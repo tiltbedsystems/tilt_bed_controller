@@ -985,3 +985,104 @@ crawl while moving — does not arise, because the telemetry chain is the same
 ~300 ms window and the same smoothness. #32's constraint that any such filter
 be sized in milliseconds rather than samples still stands for any future
 change to either chain, and is unresolved for both of them equally (#29).
+
+## 34. Stage C — the app drives the bed: all six opcodes, dead-man watchdog, arbitration
+
+Implements BLE_GATT_DESIGN #4 (opcodes), #5 (watchdog) and #14 (roles).
+Follows on from #33, which opened the write path with the one non-motion
+opcode. The app can now move the bed.
+
+### Nothing reimplements bed logic
+
+Every opcode routes through the existing `bed_control.c` verbs with
+`BED_SOURCE_APP` — the same verbs `switch_input.c`'s `process_inputs()` calls
+with `BED_SOURCE_SWITCHES`. The two-source lock (#12) and the collision/limit
+supervision underneath it (#13) therefore apply to app commands for free,
+with no BLE-specific safety code.
+
+### The gap that made this more than plumbing
+
+`bed_move_start()` latches direction and `active_switch`, but the thing that
+actually *energises* a motor is `switch_input.c`'s `process_outputs()`, and
+that runs off `app_ui_interrupt` + `switch_pressed` — a physical switch edge.
+An app command has no edge, so routing an opcode through the verb alone would
+have set all the state and moved nothing.
+
+The app path therefore applies its own outputs, via helpers added next to the
+switch path's equivalents in `bed_actions.c`
+(`app_apply_move_outputs()`, `app_apply_auto_level_start_outputs()`,
+`app_apply_lights_outputs()`, `app_apply_stop_outputs()`). Each mirrors the
+matching branch of `process_outputs()`.
+
+One consequence is easy to miss and is why `app_release_active_switch()`
+exists: **no switch-release event will ever arrive for an app command.**
+`process_outputs()` is what normally returns `active_switch` to `OFF` on
+release, and `app_bed_is_idle()` — which is what lets `bed_control` release
+the source lock — is `active_switch == OFF && !in_settings_mode`. Without an
+explicit reset, one app LIGHTS command would leave APP holding the lock
+forever and the wall switch permanently force-stopped.
+
+### STOP_ALL does not share the command slot
+
+The deferred-command slot is last-write-wins: a second write arriving before
+the main loop drains it overwrites the first. That is fine for everything
+self-correcting — the app repeats MOVE_START every 100 ms, and a lost
+MOVE_STOP is caught by the watchdog inside 300 ms — but **STOP_ALL is sent
+once and nothing corrects for losing it.**
+
+It gets a dedicated `volatile` flag, set in the Bluetooth handler and cleared
+only by the main loop *after* the stop has been performed. No other path may
+clear it, so no later command can displace a pending stop. It is also
+processed first, before the shared slot is even examined, and accepted from
+any role (#12's stop-from-anyone rule).
+
+### Dead-man watchdog (#5)
+
+300 ms sleeptimer, milliseconds not loop passes (#2), armed and refreshed
+only by MOVE_START from the control connection. At the app's 100 ms repeat
+cadence that tolerates two lost writes. AUTO_LEVEL and LIGHTS are latched and
+never arm it. MOVE_STOP and STOP_ALL cancel it; so does a collision or the bed
+going idle on its own after a limit stop. Expiry is `app_stop_all()` plus a
+`WATCHDOG_STOP` result if the link is still up.
+
+**Control-connection disconnect while APP is the active source is a full
+`app_stop_all()`, not `bed_move_stop()`.** The spec calls this out and the
+distinction is real: `bed_move_stop()` does not end a latched auto-level run,
+so a phone dropping mid-auto-level would leave the bed levelling with nobody
+connected to stop it.
+
+That stop is **flagged in the disconnect callback and performed in the main
+loop**, not inline. `app_stop_all()` drives LEDs through the I2C expander, and
+blocking I2C inside a stack callback is #27/#30's confirmed radio-starvation
+mechanism. Same reason the watchdog's sleeptimer callback only sets a flag.
+
+### Arbitration and results
+
+Viewer commands are rejected `REJECTED_VIEWER` before reaching `bed_control`.
+Two exceptions, both from #4: STOP_ALL (stop-from-anyone) and REFRESH_TILT
+(commands nothing, and its telemetry is notified to both connections anyway).
+Settings mode rejects the motion opcodes with `REJECTED_SETTINGS_MODE`;
+REFRESH_TILT is still accepted.
+
+Wall-switch-holds-the-lock is not decided here — `bed_control` already
+reports it. The start-class verbs return `false` when arbitration turned the
+command into a force-stop, which maps directly to
+`FORCE_STOPPED_OTHER_SOURCE`. The stop-class verbs always return `true` by
+design, so they always report `ACCEPTED`.
+
+### Bed Status needed no change
+
+`active_source` and `command`/`command_detail` already track app-initiated
+movement: `bed_status.c` reads `bed_active_source()` and
+`app_active_command()`, `bed_move_start()` sets the source, and
+`app_move_start()` sets `active_switch` through the same
+`motor_button_pressed()` the switch path uses. The reason those fields only
+ever showed the switch path before is that nothing had ever called the verbs
+with `BED_SOURCE_APP`. Verified by reading the path, not by adding code.
+
+### Status
+
+Compiles clean (see the handoff). **Everything else is ASSERTED** — no bench
+run yet. The watchdog, the disconnect stop, and wall-switch arbitration
+against a live app move are the three behaviours least like anything
+previously exercised on hardware.

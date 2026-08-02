@@ -7,14 +7,12 @@
  * tracking (assigned once a connection finishes bonding, not at raw
  * connection-open), and the adaptive Bed Status notify cadence (#6/#24).
  *
- * This module is glue, not a second source of truth: Stage C will feed
- * decoded Command writes into the existing bed_control.c verbs exactly as a
- * physical switch press does today - no bed logic is reimplemented here.
+ * This module is glue, not a second source of truth: Stage C feeds decoded
+ * Command writes into the existing bed_control.c verbs exactly as a physical
+ * switch press does - no bed logic is reimplemented here.
  *
- * The Command write path now exists but carries exactly one opcode,
- * REFRESH_TILT (0x07), which commands no motion. Motion opcodes 0x01-0x06
- * are specified in BLE_GATT_DESIGN.md #4 and answered REJECTED_INVALID, so
- * there is still no way to drive a motor over BLE.
+ * All seven opcodes of BLE_GATT_DESIGN.md #4 are implemented, along with the
+ * #5 dead-man watchdog and #14 role arbitration. The app can drive the bed.
  *
  *  Created on: Jul 12, 2026
  */
