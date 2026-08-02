@@ -72,7 +72,10 @@ understanding, not just correctness:
 `docs/SESSION_LOG.md`.** This is not optional and it is not a summary for the
 user — it is the next session's only record of what is actually known versus
 what was merely claimed. A `Stop` hook in `.claude/settings.json` blocks the
-session from ending until the file has been written.
+session from ending until the file has been written — and, separately, until
+this session has written its own handoff file under `docs/handoffs/`. Both
+artifacts are required; see **Session handoff file (required)** below for the
+second one and why it exists.
 
 Rules:
 
@@ -103,6 +106,85 @@ Every entry must contain:
 Remember that you do not build or flash (see Hard constraints). Anything that
 would need the bench to confirm, and that the user has not reported back on,
 is ASSERTED — regardless of how confident the reasoning is.
+
+## Session handoff file (required)
+
+**A second, separate artifact. In addition to the `docs/SESSION_LOG.md` entry
+above — not instead of it.** The `Stop` hook enforces both: the session cannot
+end until `docs/SESSION_LOG.md` has been written *and* **this session** has
+written its own handoff file in `docs/handoffs/`. A file left by an earlier
+session on the same date does not satisfy it, and unlike the log hook this one
+**fails closed** — if it cannot confirm, it blocks.
+
+The two have different readers and different jobs. `SESSION_LOG.md` is a
+summary for the next Claude Code session, and it keeps that job unchanged.
+The handoff file is for a **reviewer outside this repository**, who sees only
+this file — no conversation, no transcript, no repo browsing. A summary cannot
+serve as evidence of the work it summarises; a reviewer who is handed a
+description of a plan instead of the plan cannot review it. See
+`docs/handoffs/README.md` for the incident that established this.
+
+### Filename
+
+```
+docs/handoffs/fw_HANDOFF_<YYYY-MM-DD>_<NN>_<slug>.md
+```
+
+- `<NN>` — two-digit sequence within that date, starting at `01`.
+- `<slug>` — short kebab-case description.
+- **The `fw_` prefix is mandatory.** The sibling app repo uses `app_`, and
+  both repos' files upload to the same place; a bare name collides and one
+  silently overwrites the other.
+
+### Required contents, in this order
+
+- **a. Header.** Repo name, branch, HEAD before the session, HEAD after, and
+  the full output of `git status` at the end.
+- **b. THE FULL TEXT of every plan, design, recommendation, or analysis the
+  session produced.** Verbatim, complete, inline in this file. Never a
+  summary. Never a pointer to another document — not even one in this repo.
+  If a plan existed only in the conversation, write it into this file in
+  full. **This is the single most important requirement and the specific
+  failure this file exists to prevent.**
+- **c. The complete `git diff` for every source change**, verbatim — not a
+  description of it. A docs-only diff over 400 lines may be truncated with an
+  explicit note saying so; **source diffs are never truncated.** One standing
+  exception: the `docs/SESSION_LOG.md` diff never needs reproducing, because
+  the log ships alongside the handoff in the same upload — note its omission
+  and move on.
+- **d. The raw output of every command run** — builds, greps, git —
+  **including failures.** A command that errored is evidence too.
+  **Redaction:** if output contains a secret, replace it inline with
+  `[REDACTED: what it was]` — never silently drop the line or the command.
+  A reader must be able to see that something was removed and what kind of
+  thing it was. This carve-out covers command output only; it does not
+  license summarising under (b), which governs plans.
+- **e. Every claim split VERIFIED vs ASSERTED, with the evidence attached to
+  each VERIFIED claim** — `file:line` for a code fact, raw output for a run
+  result. This repo's existing VERIFIED/ASSERTED discipline (see the section
+  above) is the model; the change here is that the evidence travels with the
+  claim instead of the claim standing alone.
+- **f. `QUESTIONS FOR REVIEW`** — judgement calls the session did not feel
+  authorised to make.
+- **g. `NOT DONE`** — anything asked for and not done, with the reason.
+
+Sections (b) and (e) are where this file earns its keep. Length is not a
+reason to summarise: if the choice is between a long file and an incomplete
+one, write the long file.
+
+### Committing
+
+**A handoff describes the commits that precede it, and is committed
+separately, last.** Do the work, commit it, then write the handoff against
+what was committed and commit that on its own. This keeps a work commit's diff
+free of the document describing it, and means the handoff can quote real
+SHAs and a real end-of-session `git status` instead of predicting them.
+
+`docs/handoffs/` is version-controlled. These files are evidence; evidence that
+only exists in an upload is not evidence.
+
+Retention: none. Nothing is pruned or archived, and one file per session
+accumulates indefinitely. Revisit if the directory gets heavy.
 
 ## Where this fits in the migration (D1)
 
@@ -154,7 +236,9 @@ before any BLE work begins.
   `DECISIONS.md` is binding; `HARDWARE_CONFIG.md` is the authoritative
   component/pin record; `REGRESSION.md` is the hardware gate checklist;
   `SESSION_LOG.md` is the append-only session handoff record (see "Session
-  handoff (required)" above).
+  handoff (required)" above); `handoffs/` holds the per-session
+  reviewer-facing handoff files (see "Session handoff file (required)" above,
+  and `docs/handoffs/README.md`).
 
 ## Working conventions
 
