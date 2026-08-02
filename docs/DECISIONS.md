@@ -737,3 +737,104 @@ raw sample between I2C reads does not make `NUM_ACCEL_READINGS` or
 `accel_running_average()`'s window is separate, control-behavior-changing
 work, explicitly not part of this fix and not required to close out the BLE
 drop.
+
+## 31. Auto-level's sample buffer must never be fed by the telemetry sampler — the two tilt values are deliberately separate
+
+Recorded **before** any Item 2 (continuous tilt sampling) implementation
+exists, because the thing being prohibited is the change a future reader is
+most likely to make on sight.
+
+Item 2's accepted architecture (option O2.3) gives telemetry its **own** tilt
+value and leaves `accel_running_average()`'s 130-slot buffer
+(`accel_readings_roll[]` / `accel_readings_pitch[]` in `auto_level.c`) fed
+only from the auto-level and zero-level paths, exactly as today. That means
+two tilt values will exist in the tree at once. **The duplication is
+deliberate. Do not unify them.**
+
+### Why unifying breaks auto-level
+
+The obvious "cleanup" is to make one sampler feed the shared buffer at one
+decimated cadence and let both auto-level and telemetry read it. That was
+evaluated as option O2.2 and rejected. The arithmetic:
+
+```
+NUM_ACCEL_READINGS          = 130 slots
+telemetry cadence           = 100 ms  (10 Hz, the moving-state rate)
+buffer span                 = 130 x 100 ms = 13 000 ms = 13 s
+
+STEADY_ACCEL_READ_TIMER_TIME = 1500 ms
+```
+
+`steady_accel_read_both_axes()` calls the first `check_level()` after 1500 ms.
+With the buffer spanning 13 s, that first check averages roughly 11.5 s of
+history from **before the user pressed the button** — the bed's tilt while it
+was being loaded, walked on, or moved by hand. `check_level()` sets
+`level_status[axis].positive`, which `set_auto_level_motor_direction()` turns
+into which pair drives up. So auto-level could pick its **first motor
+direction from data predating the press**, and drive the bed away from level.
+That is a safety-relevant misbehaviour, not a cosmetic one.
+
+Today's cadence is what prevents this: the auto-level path samples every
+super-loop pass, measured at ~2.31 ms/pass, so 130 samples ≈ 300 ms and the
+buffer is fully overwritten about five times inside the 1500 ms window.
+Nothing from before the press survives into the first check. **The margin is
+the loop rate, and decimating the sampler destroys it.**
+
+This is DECISIONS #29's failure mode — a constant calibrated in loop passes
+rather than time — reappearing as a consequence of an unrelated refactor.
+
+### The rule
+
+- The telemetry sampler must not write `accel_readings_roll[]`,
+  `accel_readings_pitch[]`, `accel_running_sum_*`, or `index`.
+- If the auto-level sampling cadence is ever changed, re-check
+  `NUM_ACCEL_READINGS x (sampling interval)` against
+  `STEADY_ACCEL_READ_TIMER_TIME` **against a measured loop rate, not an
+  assumed one** (#2, #29). It must stay comfortably below.
+- Anyone proposing to collapse the two tilt values should read this entry
+  first and produce the arithmetic above for their proposed cadence.
+
+Status: Item 2 is accepted in principle (O2.3) but **not approved for
+implementation**. No sampler exists yet. This entry is the prohibition only.
+
+## 32. Telemetry tilt needs its own filter — open design question against Item 2
+
+Recorded as open, not decided. Do not treat the absence of an answer here as
+permission to skip the question.
+
+Item 2's specification for the telemetry tilt value is, in full, "telemetry
+keeps its own value" (#31). That says nothing about filtering, and the value
+does **not** inherit auto-level's smoothing: `baseline_accel_average_*` is an
+average over `NUM_ACCEL_READINGS` = 130 samples of an already low-pass
+filtered input (`accel_alpha`), whereas a fresh telemetry value is whatever
+the last sample said.
+
+Consequences if it ships unfiltered:
+
+- **Idle (~1 Hz):** a raw single sample per notification. Accelerometer noise
+  and any vibration in the van show up directly as a jittering angle on the
+  phone.
+- **Moving (~10 Hz):** the display crawls and hunts while the bed is actually
+  in motion, which is exactly when the user is watching it.
+
+So the telemetry value needs a filter of its own. The constraint on its
+design, and the reason this is recorded rather than left to implementation
+time:
+
+**Size it in MILLISECONDS, not in samples or loop passes** (#2, #29). Copying
+`NUM_ACCEL_READINGS` or `accel_alpha` would import the exact loop-rate
+dependence #29 exists to flag, into a value whose sampling cadence is
+*designed* to change between idle and moving. A filter specified as "N
+samples" would have a different time constant in each state.
+
+Open sub-questions, none answered here:
+
+- One time constant, or one per cadence state?
+- What settling time is acceptable before the displayed angle is trustworthy,
+  and does that interact with `tilt_fresh`'s meaning (#17, BLE_GATT_DESIGN #6)?
+- Does the filter live in firmware or the app? Firmware costs code on the
+  constrained side; the app can filter what it is sent but cannot recover
+  detail that was never sampled.
+
+Not designed here, by instruction. This entry exists so the question is not
+rediscovered after the display is found to be jittery on a bench unit.
