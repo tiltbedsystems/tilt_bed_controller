@@ -480,3 +480,78 @@ principle (O2.3) but NOT approved for implementation.**
 - **...that a handoff file left by an earlier session satisfies the Stop
   hook.** It now requires a file written by *this* session, and it fails
   closed.
+
+---
+
+## 2026-08-02 (fourth) — Live tilt telemetry + first Command write path
+
+**Commits**
+
+- `83cc628` — Live tilt telemetry: separate sampler, four triggers, first
+  Command write. Plus the handoff commit that follows this entry.
+
+Superseded the earlier motors-on-only scope: the sampling window is now
+opened by four triggers (subscriber 0→1, REFRESH_TILT, motors any-on→all-off,
+auto-level).
+
+**VERIFIED — static only, nothing ran**
+
+- A new `.c` file **cannot** be added without the Studio configurator:
+  `cmake_gcc/tilt_bed_controller_project.cmake` lists sources explicitly and
+  is generated. That is why the sampler lives in `auto_level.c` rather than a
+  new module.
+- `sl_bt_evt_gatt_server_attribute_value_t` fields checked against the
+  installed SiSDK 2026.6.0 header (`sl_bt_api.h:10398-10407`) before the
+  handler was written; `gattdb_command_result` and the 4-byte Command length
+  checked in `autogen/gatt_db.h`.
+- The stack callback does nothing but copy four bytes and set a flag. All
+  decisions are in `process_pending_command()`, main-loop context.
+- Telemetry never touches auto-level's filter state: `auto_level_filter`
+  appears only inside `accel_running_average()`. No file-scope accel buffer,
+  sums or index remain (grep returns empty).
+- `tilt_fresh` and the flags byte are untouched.
+- The sampler neither samples nor arms without a subscriber, so a phone-less
+  bed keeps its exact previous behaviour including never vetoing sleep.
+
+**ASSERTED — all of it**
+
+- **Not built, not flashed, not measured.** No compiler has seen this.
+- **That the `read_accel()` split leaves auto-level unchanged.** The LPF moved
+  out of `read_accel()` into `accel_filter_update()` so each chain filters
+  into its own accumulator. The equivalence argument is a side-by-side
+  transcription check, by inspection only. This is in the safety path and is
+  the single claim most worth disproving on the bench.
+- That 500 ms is enough for the 130-slot filter to fill — arithmetic on a
+  loop rate measured on the *auto-level* path, which #29 says not to
+  extrapolate.
+- Live update, post-move settle, the write path, the sleep veto, and the
+  absence of new `0x1008` drops: all unobserved.
+
+**Open**
+
+- The full bench acceptance, written out step-by-step in
+  `fw_HANDOFF_2026-08-02_04`. It includes a **before/after loop-rate
+  measurement on the manual-move path** — no such figure has ever existed —
+  and requires a temporary pass counter, since the #30 instrumentation was
+  stripped. The BEFORE measurement must be taken on `23b84aa` before flashing
+  the new firmware, or it is unrecoverable.
+- **REGRESSION.md §5 collision, re-run on a manual move, before the long
+  soaks.** Collision timing is loop-pass calibrated, so the loop rate moving
+  *is* a change in collision behaviour. Sequenced first deliberately.
+- Six review questions in that handoff's §f.
+- The Release-config confirmation pass is still owed before Stage C ships.
+
+**The next session must NOT assume**
+
+- **...that any of this works.** It is unbuilt. A build succeeding would still
+  not make it verified.
+- **...that auto-level is untouched.** `read_accel()` was split. The change is
+  argued to be equivalent; it has not been demonstrated to be.
+- **...that the two tilt values may be unified.** DECISIONS #31 still governs;
+  #33 is the positive half and says why the duplication is deliberate.
+- **...that motion over BLE now works.** One opcode exists, REFRESH_TILT, and
+  it commands nothing. 0x01–0x06 answer REJECTED_INVALID.
+- **...that more than one Command write can be in flight.** One slot; a second
+  write overwrites the first. Fine for REFRESH_TILT, not for MOVE_START.
+- **...that `tilt_fresh` means anything yet.** Still hardcoded 0, and the
+  app's `TODO(tilt-fresh)` ungating is still correct.
