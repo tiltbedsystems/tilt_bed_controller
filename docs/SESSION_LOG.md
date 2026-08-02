@@ -134,3 +134,95 @@ work itself was done 2026-07-17 through 2026-07-19.
 - **...that any constant expressed in loop passes is stable in time.** Per
   DECISIONS #2 and #29, safety and control timing must be in milliseconds and
   checked against a *measured* loop rate.
+
+---
+
+## 2026-08-01 (later) — CORRECTION: `af369f2`'s CCCD seeding was VERIFIED on hardware, not ASSERTED
+
+**Corrects the 2026-08-01 backfill entry above.** That entry is left standing
+as written, per this file's append-never-overwrite rule; read it together with
+this one.
+
+**Commits**
+
+- `ba7ca0b` — Enforce session handoffs: `docs/SESSION_LOG.md` + Stop hook.
+  (Created the log; not listed in the backfill entry, which was written before
+  the commit existed.)
+- This commit — this correction entry.
+
+**What the backfill entry got wrong**
+
+It filed `af369f2`'s CCCD seeding under "ASSERTED but NOT tested" and listed
+"Resumed-bond CCCD probe" as open, on the reasoning that the `cccd_seed` print
+existed as a probe but its output had not been read out. **That was wrong.**
+The probe had already been run on hardware, and passed, *before* the backfill
+entry was written. The evidence existed; the entry failed to account for it.
+
+This is the same class of error as DECISIONS #27, inverted. #27 recorded a fix
+as confirmed when nothing had confirmed it. This entry recorded a
+hardware-confirmed result as unconfirmed. Both put a claim in the record that
+the evidence did not support, and both mislead the next session — one into
+false confidence, one into re-running work that was already done and
+re-opening a question that was already answered. The VERIFIED/ASSERTED split
+is only worth anything if it is applied against the evidence that actually
+exists, in both directions. Ask what has been run before classifying.
+
+**Moved from ASSERTED to VERIFIED**
+
+- **`af369f2`'s CCCD seeding, and the premise it was built on.** Bench
+  captures, serial via PuTTY on COM6, on a resumed-bond reconnect with no
+  re-pairing:
+
+  ```
+  BLE: cccd_seed conn=2 bed_status=0x0001 sc=0x0000
+  BLE: cccd_seed conn=3 bed_status=0x0001 sc=0x0000
+  ```
+
+  `bed_status=0x0001` confirms the Silicon Labs stack **does** restore the
+  client's CCCD across a resumed bond — which is exactly the premise the fix
+  rests on, and the thing the backfill entry said had never been observed.
+
+- **The end-to-end acceptance test passed.** On reconnect, live Bed Status
+  telemetry flowed **without any unsubscribe/resubscribe toggle in nRF
+  Connect**. That toggle was the original user-facing symptom; it is gone. The
+  fix is confirmed at the behavior level, not just at the probe level.
+
+**Also observed on the bench, and expected — do not re-investigate**
+
+- **`characteristic_status DROPPED` at `security_mode=0`, on every
+  connection.** The stack replays the stored CCCD before encryption completes
+  and before a role has been assigned, so the event has no role slot to land
+  in and is dropped. The post-encryption `cccd_seed` is what recovers it —
+  that is the whole point of `af369f2`. This line is benign and by design.
+  It is the logging `af369f2` added for previously-silent unmatched events
+  doing its job, **not** a symptom. Do not chase it as a bug.
+- **`REPLACING existing bond` after deleting the phone-side bond and power
+  cycling.** Correct behavior: firmware NVM3 still holds the bond, so the
+  re-pair hits the `f259605` auto-replace path (DECISIONS #28). Working as
+  designed.
+
+**Open — with one item now closed**
+
+- ~~Resumed-bond CCCD probe~~ — **CLOSED.** Run, passed, evidence above.
+- **Everything else in the backfill entry's Open list still stands**, in
+  particular:
+  - **The Release-config confirmation pass is still owed before Stage C
+    ships.** The regression pass was Debug-only. Nothing in this correction
+    touches that; `EFM_ASSERT` still compiles out in Release.
+  - DECISIONS #29 (loop-rate-dependent calibration reaching the
+    collision-detection path) — still open, still safety-relevant.
+  - Subscription bookkeeping still not keyed by connection handle
+    (deliberate; would touch DECISIONS #21).
+  - `REGRESSION_RECORD_D1.md` still stays an empty template.
+
+**The next session must NOT assume**
+
+- **...that the backfill entry's ASSERTED list is current.** Its CCCD-seeding
+  item is superseded by this entry. The rest of that list stands.
+- **...that the `characteristic_status DROPPED` line indicates a fault.** See
+  above — expected, benign, explained.
+- **...that Stage C's gate is now clear.** The CCCD question is settled; the
+  Debug-only regression pass is not. That gate is unchanged.
+- **...that a claim in this log was classified against all available
+  evidence.** This entry exists because one wasn't. If a classification looks
+  wrong, check the bench record before building on it.
