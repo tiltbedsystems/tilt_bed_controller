@@ -1,0 +1,23 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell",
+            "args": [
+              "-NoProfile",
+              "-ExecutionPolicy",
+              "Bypass",
+              "-File",
+              ".claude/hooks/check-session-log.ps1"
+            ],
+            "timeout": 30,
+            "statusMessage": "Checking docs/SESSION_LOG.md handoff entry"
+          }
+        ]
+      }
+    ]
+  }
+}

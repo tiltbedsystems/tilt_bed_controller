@@ -25,5 +25,9 @@ desktop.ini
 # .slcp/pintool config record)
 /.uceditor/
 
-# Claude Code local session state
-/.claude/
+# Claude Code local session state. The session-handoff Stop hook and the
+# settings that wire it up are project policy, not local state, so those two
+# are tracked; settings.local.json (personal permission grants) stays ignored.
+/.claude/*
+!/.claude/settings.json
+!/.claude/hooks/

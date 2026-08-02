@@ -66,6 +66,44 @@ understanding, not just correctness:
   compile errors); otherwise give exact steps and let the user report
   results back.
 
+## Session handoff (required)
+
+**Before ending any session, APPEND a handoff entry to
+`docs/SESSION_LOG.md`.** This is not optional and it is not a summary for the
+user — it is the next session's only record of what is actually known versus
+what was merely claimed. A `Stop` hook in `.claude/settings.json` blocks the
+session from ending until the file has been written.
+
+Rules:
+
+- **Append. Never overwrite.** Newest entry at the bottom. Do not edit,
+  reword, or delete an earlier entry. If an earlier entry turns out to be
+  wrong, correct it in a *new* entry that says so — the same way
+  `DECISIONS.md` corrects itself (see #27) rather than rewriting history.
+- **Log even when no commits were made.** "Investigated X, changed nothing,
+  here's what I ruled out" is exactly the kind of session whose findings get
+  lost.
+
+Every entry must contain:
+
+1. **Date.**
+2. **Commits** — short SHA plus one line each.
+3. **VERIFIED vs ASSERTED-but-untested.** This is the important one. VERIFIED
+   means there is evidence: a bench run that was actually executed, a
+   measurement, a header that was actually read. ASSERTED means it is
+   reasoned, compiles, and looks right, but nothing observed it. Code that
+   builds is not code that was tested, and neither is a fix whose premise was
+   never checked on hardware. Split them explicitly; when in doubt it is
+   ASSERTED.
+4. **What's left open** — including work deliberately deferred, and why.
+5. **What the next session must NOT assume** — superseded decisions, numbers
+   that are valid only in the context they were measured in, gates that are
+   only partly satisfied, records that must not be backfilled.
+
+Remember that you do not build or flash (see Hard constraints). Anything that
+would need the bench to confirm, and that the user has not reported back on,
+is ASSERTED — regardless of how confident the reasoning is.
+
 ## Where this fits in the migration (D1)
 
 See `docs/MIGRATION_STATUS.md` for the live checklist. Short version: this
@@ -114,7 +152,9 @@ before any BLE work begins.
   project/component configuration and pin assignment tool state.
 - `docs/` — migration and design docs. Start with `MIGRATION_STATUS.md`;
   `DECISIONS.md` is binding; `HARDWARE_CONFIG.md` is the authoritative
-  component/pin record; `REGRESSION.md` is the hardware gate checklist.
+  component/pin record; `REGRESSION.md` is the hardware gate checklist;
+  `SESSION_LOG.md` is the append-only session handoff record (see "Session
+  handoff (required)" above).
 
 ## Working conventions
 
