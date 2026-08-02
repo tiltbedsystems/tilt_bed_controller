@@ -555,3 +555,82 @@ auto-level).
   write overwrites the first. Fine for REFRESH_TILT, not for MOVE_START.
 - **...that `tilt_fresh` means anything yet.** Still hardcoded 0, and the
   app's `TODO(tilt-fresh)` ungating is still correct.
+
+---
+
+## 2026-08-02 (fifth) — Stage C: the app drives the bed
+
+**Commits**
+
+- `ab12d09` — Stage C: all six motion opcodes, dead-man watchdog, source
+  arbitration. Plus the handoff commit after this entry.
+
+**VERIFIED**
+
+- **It compiles clean.** Whole app layer, zero warnings, links at 240956
+  text / 780 data / 72480 bss. `base` config (the only one this project
+  defines — not Release).
+- **The previous commit's tilt telemetry compiles too.** `auto_level.c` did
+  not rebuild on the first build, so it was forced to; it is clean. That
+  retires `fw_HANDOFF_..._04`'s ASSERTED "it compiles".
+- **Routing opcodes through `bed_control` alone would NOT have moved the
+  bed.** `bed_move_start()` latches direction and `active_switch`, but the
+  thing that energises a motor is `switch_input.c`'s `process_outputs()`
+  (`switch_input.c:149-218`), driven by `app_ui_interrupt` + `switch_pressed`
+  — a physical switch edge an app command does not produce. The app path now
+  applies its own outputs via helpers in `bed_actions.c`.
+- **`active_switch` is what releases the source lock** (`app_bed_is_idle()`,
+  `bed_actions.c:222`; `bed_control.c:30-36`), and no switch-release event
+  ever arrives for an app command. Without `app_release_active_switch()`, one
+  app LIGHTS command would leave APP holding the lock forever and every wall
+  switch press force-stopped.
+- **Bed Status needed no code.** `bed_status.c:99,101` already read
+  `app_active_command()` and `bed_active_source()`; those fields only ever
+  showed the switch path because nothing had called the verbs with
+  `BED_SOURCE_APP`. Traced, not assumed.
+- No work happens in any stack callback: the write handler copies bytes, the
+  disconnect handler sets a flag, the watchdog timer callback sets a flag.
+
+**ASSERTED — all behaviour**
+
+- **That the bed moves from the app at all.** Never flashed. A clean build
+  proves the types line up and nothing more.
+- That the output helpers energise the right motors and LEDs — transcribed
+  from `process_outputs()` by eye.
+- That the source lock actually releases after an app command. If this is
+  wrong the wall switch stops responding; acceptance steps (a) and (h) are
+  the check.
+- That the watchdog stops the bed within ~300 ms of link loss, and that the
+  disconnect stop fires and ends a latched auto-level.
+- That live tilt keeps updating during app-driven movement. The sampler gates
+  on "a motor is energised" and should not care who started it — still an
+  assumption, and acceptance step (j) exists to test it rather than assume it.
+
+**Open**
+
+- Full bench acceptance, steps a–k in `fw_HANDOFF_2026-08-02_05`. Step (g),
+  the watchdog link-drop test, is the one that matters most; step (i) is
+  skippable with one phone.
+- Five review questions in that handoff's §f — chiefly that the deferred
+  disconnect stop costs up to one loop pass (~2.3 ms) before motors stop, and
+  that `app_apply_*_outputs()` now duplicates `process_outputs()`'s branches
+  by transcription and can drift.
+- **Manual-move loop-rate measurement still owed**, carried from the previous
+  session and now more relevant — this change adds I2C work to the command
+  path.
+- **The Release-config confirmation pass is still owed before Stage C ships.**
+
+**The next session must NOT assume**
+
+- **...that Stage C works.** It builds. Nothing has been on hardware.
+- **...that a clean build says anything about the watchdog, the disconnect
+  stop, or arbitration.** Those three are the least like anything previously
+  run on this bed.
+- **...that `process_outputs()` and the app helpers are one implementation.**
+  They are two, kept in step by hand, side by side in `bed_actions.c` and
+  `switch_input.c`.
+- **...that the app can be locked out safely by leaving `active_switch` set.**
+  It is the source-lock release mechanism; see the VERIFIED note above before
+  touching it.
+- **...that `tilt_fresh`, the pairing window, or #29's loop-pass constants
+  were touched.** All explicitly out of scope and untouched.
