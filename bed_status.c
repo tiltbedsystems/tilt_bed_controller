@@ -90,7 +90,20 @@ void bed_status_get(bed_status_t *out)
   }
 
   out->roll_angle_scaled = baseline_accel_average_roll_angle;
-  out->pitch_angle_scaled = baseline_accel_average_pitch_angle;
+
+  // Product convention on the wire is POSITIVE = head raised. The internal
+  // value is the opposite sign (see auto_level.c's frame diagram: "If HEAD is
+  // high, PITCH is NEGATIVE"), and it must stay that way - latest_pitch_angle
+  // feeds check_level()/set_auto_level_motor_direction(), so flipping it
+  // upstream would invert which pair auto-level drives. The wire encoding is
+  // the correct boundary for the convention change. Roll is unaffected.
+  //
+  // This negation is the ONLY place the two conventions meet. Do not add a
+  // second one anywhere downstream - ble_bed_service.c just packs the int16.
+  // Negation cannot overflow: the source range is about -28500..+10500
+  // (atan2 minus PITCH_OFFSET, scaled, less a baseline clamped to +/-1500 by
+  // bed_settings.c), against INT16_MIN -32768.
+  out->pitch_angle_scaled = -baseline_accel_average_pitch_angle;
 
   out->any_collision = any_collision;
   out->in_settings_mode = app_in_settings_mode();

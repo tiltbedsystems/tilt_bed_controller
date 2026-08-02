@@ -217,6 +217,26 @@ void read_accel(){
   accel_vector_mag = sqrt(x_accel_vector * x_accel_vector + y_accel_vector * y_accel_vector + z_accel_vector * z_accel_vector);
 
   // Calculate roll and pitch angles
+  //
+  // PITCH SIGN IS DELIBERATE - DO NOT "FIX" IT HERE.
+  // This produces NEGATIVE pitch when the HEAD is raised (see the frame
+  // diagram below set_auto_level_motor_direction()). That is the internal
+  // convention, it is fixed by how the accelerometer is mounted, and two
+  // things depend on it:
+  //
+  //   1. Auto-level's direction logic. latest_pitch_angle feeds the running
+  //      average -> check_level(PITCH) -> level_status[PITCH].positive ->
+  //      set_auto_level_motor_direction(), which decides whether HEAD or FOOT
+  //      drives up. Negating here inverts that - the bed would level away
+  //      from level. Safety-relevant.
+  //   2. Every zero-level baseline already stored in NVM3, on every bed
+  //      built. settings_mode.c stores returnAccelValue(PITCH) raw, in this
+  //      convention. Negating here would silently invalidate all of them and
+  //      there is no migration path for units already in the field.
+  //
+  // The product-facing convention (POSITIVE = head raised) is applied ONCE,
+  // at the wire boundary, in bed_status.c's bed_status_get(). That is the
+  // only place the two conventions meet. Roll is unaffected either way.
   latest_roll_angle = (float)(atan2(x_accel_vector, accel_vector_mag)) * (RAD_TO_DEG);
   latest_pitch_angle = (float)(atan2(y_accel_vector,z_accel_vector)) * (RAD_TO_DEG) - PITCH_OFFSET;
 
@@ -268,6 +288,14 @@ int16_t returnAccelValue(axis_t axis) {
   }
 }
 
+// NOTE ON SIGN, for the commented-out CSV lines below as well as the live
+// prints: every pitch value printed from this file is in the INTERNAL
+// convention (head raised => NEGATIVE), not the wire convention the app shows
+// (head raised => POSITIVE, applied in bed_status.c). If the CSV-style
+// printfs below are ever re-enabled for a tilt capture, the resulting log
+// will disagree in sign with the app for the same physical bed position.
+// Negate on the analysis side, or note the convention in the capture header -
+// do not "correct" it here (see the warning at read_accel()).
 void print_accel_value(axis_t axis){
   if (axis == ROLL){
     printf("ROLL Angle is: %d\r\n", accel_average_roll_angle);

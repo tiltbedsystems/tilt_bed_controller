@@ -46,6 +46,14 @@ typedef struct {
   // continuously fresh while auto-level or the settings zero-level capture
   // is running - stale (last-known, possibly 0) otherwise. See
   // DECISIONS.md #17.
+  //
+  // SIGN CONVENTION - these are wire-facing values, and pitch does NOT match
+  // auto_level.c's internal sign. bed_status_get() negates pitch exactly once
+  // on the way out; see the comment there.
+  //   roll_angle_scaled  POSITIVE = LEFT side raised
+  //                      (derived from auto_level.c's frame diagram, NOT yet
+  //                      bench-confirmed - BLE_GATT_DESIGN.md #6)
+  //   pitch_angle_scaled POSITIVE = HEAD raised
   int16_t roll_angle_scaled;
   int16_t pitch_angle_scaled;
 

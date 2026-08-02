@@ -153,7 +153,10 @@ offset 2   command          u8   0 NONE, 1 MOVE, 2 AUTO_LEVEL, 3 LIGHTS
 offset 3   command_detail   u8   bits0-2 target (0-4), bit3 direction (0 down/1 up)
                                  valid only when command == MOVE
 offset 4   roll_scaled      i16  ×100, deviation from level baseline
-offset 6   pitch_scaled     i16  ×100
+                                 POSITIVE = LEFT side raised
+                                 ** PROVISIONAL - see "Tilt sign conventions" **
+offset 6   pitch_scaled     i16  ×100, deviation from level baseline
+                                 POSITIVE = HEAD raised
 offset 8   motor[0..3]      4 × { status u8, current_ma u16 }  = 12 B
              status: bit0 on, bit1 moving_up, bit2 at_upper_limit,
                      bit3 at_lower_limit, bit4 fault, bits5-7 reserved
@@ -161,6 +164,70 @@ offset 8   motor[0..3]      4 × { status u8, current_ma u16 }  = 12 B
              NOT logical corner — the corner mapping arrives with the
              calibration wizard (#7); until then the app labels A–D.
 ```
+
+### Tilt sign conventions
+
+**Pitch — SPECIFICATION. `POSITIVE = HEAD raised`.**
+
+Firmware's internal pitch is the opposite sign: `read_accel()` derives it from
+`atan2(y,z) − PITCH_OFFSET`, which is negative when the head is up. That
+internal sign is fixed by the accelerometer mounting and cannot be changed —
+it feeds `check_level(PITCH)` → `set_auto_level_motor_direction()`, so
+inverting it would invert which pair auto-level drives, and it is also the
+convention every zero-level baseline already stored in NVM3 was captured in.
+The conversion is therefore applied exactly once, at the wire boundary, in
+`bed_status.c`'s `bed_status_get()`. Clients decode the wire value as-is; no
+client should apply a sign transform of its own.
+
+**Roll — PROVISIONAL, pending bench confirmation. `POSITIVE = LEFT raised`.**
+
+This is **not** established. It is read off the frame diagram comment in
+`auto_level.c` (above `set_auto_level_motor_direction()`), which is a
+description of the intended mounting, not a measurement. The bench run that
+found the pitch sign wrong did not report on roll at all, and silence is not
+confirmation — the same run would have looked identical whether roll was right
+or wrong, because nobody checked it.
+
+Treat the roll line as a hypothesis until a bench acceptance run confirms all
+four directions:
+
+| Action | Expected wire value |
+|---|---|
+| Raise HEAD | pitch POSITIVE |
+| Raise FOOT | pitch NEGATIVE |
+| Raise LEFT | roll POSITIVE |
+| Raise RIGHT | roll NEGATIVE |
+
+Once that passes, delete the PROVISIONAL marker on offset 4 and this
+paragraph, and the roll line becomes specification like pitch. Until then, do
+not build a client behaviour that depends on roll's sign.
+
+### Protocol version and this change
+
+The pitch convention above **changed within protocol v1**. The byte layout did
+not move — offset 6 is still an `i16` ×100 — but the *meaning* of those bytes
+inverted, which is exactly the class of change a client cannot detect. A
+client built against the old convention reads the new firmware without error
+and displays pitch upside down.
+
+**Decision: no version bump.** Firmware serves `01` from the Protocol Version
+characteristic (`config/btconf/gatt_configuration.btconf`, a `const`
+characteristic), and the app's `kMaxSupportedProtocolVersion` is 1 with
+anything higher hitting its `tooNewRefuse` path. Bumping to `02` would make
+current firmware refuse to talk to the current app for a change the app does
+not need to adapt to — it decodes the wire value directly and needs no edit.
+Amending v1 in place is correct here **only because no unit has shipped**:
+there is no deployed client that could hold the old convention.
+
+**This does not generalise. After first customer ship, any change to what a
+field MEANS requires a protocol version bump, even when the byte layout is
+byte-for-byte identical.** Layout stability is not compatibility. The
+Protocol Version characteristic exists precisely so a client can refuse a wire
+format it does not understand, and a silent semantic change defeats it — the
+failure is invisible on both ends, which is worse than a refusal.
+
+(Note also that the version value lives in a Simplicity Studio-generated
+config file, so a future bump goes through the configurator, not a hand-edit.)
 
 **`tilt_fresh` requires a one-bit firmware addition** implementing
 DECISIONS #17's app-era plan: continuous accelerometer sampling runs at a
