@@ -226,3 +226,257 @@ exists, in both directions. Ask what has been run before classifying.
 - **...that a claim in this log was classified against all available
   evidence.** This entry exists because one wasn't. If a classification looks
   wrong, check the bench record before building on it.
+
+---
+
+## 2026-08-02 — PLANNING ONLY: pitch wire sign (Item 1) and continuous tilt sampling (Item 2)
+
+**Commits: none.** Planning session by explicit instruction; firmware parked
+at `29fdf0d` and not touched. No source file was modified. The only file
+changed this session is this log.
+
+Confirmed by `git diff --stat 29fdf0d..HEAD` that the two commits after
+`29fdf0d` (`ba7ca0b`, `6cbd2fd`) touch only `docs/`, `CLAUDE.md`,
+`.gitignore` and `.claude/` — **the firmware tree is still bit-for-bit
+`29fdf0d`.**
+
+**VERIFIED (read directly from the tree this session — code facts, not bench
+results)**
+
+- `read_accel()` is called from exactly one place: `accel_running_average()`
+  (auto_level.c:237). `accel_running_average()` is called from exactly two:
+  app.c:569 and settings_mode.c:258. Confirms the staleness premise.
+- **Auto-level's sample buffer is never reset.** `reset_level_data()`
+  (auto_level.c:366-384) does not touch `accel_readings_roll/pitch[]`,
+  `index`, `accel_running_sum_*`, or the LPF state `latest_*_filtered`. They
+  are zero-initialised at boot and persist for the whole power cycle. So the
+  buffer is *already* pre-filled at entry to every auto-level run after the
+  first since boot — "starting cold" describes only the first run.
+- `steady_accel_read_both_axes()` (auto_level.c:549) does not sample — its
+  `accel_running_average()` call is commented out at line 550. It waits
+  `STEADY_ACCEL_READ_TIMER_TIME` (1500 ms) before the first `check_level()`,
+  while app.c:569 feeds the buffer every pass. At the measured ~2.31 ms/pass,
+  130 samples ≈ 300 ms, so the buffer is fully overwritten ~5× before the
+  first check.
+- `app_is_ok_to_sleep()` (app.c:500) vetoes sleep **only while a motor is
+  energised**. Idle, the loop sleeps — so idle is not a fast loop and needs a
+  wake source for any idle sampling.
+- `ble_bed_service_tick()` early-returns on `status_subscriber_count == 0`
+  (ble_bed_service.c:339), and its own comment already names the intended
+  gate: "no accel-sampling gate to feed yet".
+- `status_flags_changed()` (ble_bed_service.c:313-324) memcmps bytes 0-3, so
+  the flags byte — which holds `tilt_fresh` (bit 3) — forces an immediate
+  notification on every transition. Tilt *angles* are deliberately excluded.
+- `tilt_fresh` is hardcoded `false` at ble_bed_service.c:347.
+- Build is `-mfpu=fpv5-sp-d16 -mfloat-abi=hard` (single-precision hardware
+  FPU), while `read_accel()` uses **double**-precision `sqrt()` and two
+  `atan2()` calls (auto_level.c:217-221; `PI`/`RAD_TO_DEG` are double
+  literals). Those run on *every* call — the 10 ms gate bounds only the I2C
+  burst, not this math.
+- Wire path for pitch is a single assignment, bed_status.c:93; ble_bed_service.c:80-81
+  is sign-agnostic byte packing. Negation cannot overflow int16: worst-case
+  source range is about −28500..+10500, against INT16_MIN −32768.
+- **Companion app (read-only, `../tilt_bed_app`): no change needed for the
+  pitch sign, verified not assumed.** `bed_status.dart:190` decodes
+  `getInt16(6)/100.0` with no transform; `telemetry_panel.dart:65` displays it
+  directly; tests use literal round-trips or `.abs()`. The mock's `_pitchDeg()`
+  (`headAvg - footAvg`, mock_bed_transport.dart:163) is *already* positive =
+  head raised, so the firmware fix removes a latent mock-vs-hardware
+  divergence rather than creating one.
+- **Cross-repo dependency for `tilt_fresh`:** the app deliberately passes
+  `fresh: true` instead of `status.tiltFresh` (telemetry_panel.dart:55, with
+  `TODO(tilt-fresh)`) *because* firmware hardcodes 0. Firmware implementing
+  the real bit changes nothing on screen until that TODO is reverted.
+
+**ASSERTED but NOT tested — the whole plan**
+
+- The argument that the `28def95` 10 ms rate limit makes per-tick sampling
+  safe **for the I2C bus** during manual moves (same load, same bus, same
+  power state as the bench-clean auto-level path) is reasoning from the #30
+  measurement, not a new measurement. Nothing has been run.
+- The claim that the added double-precision math is the unbounded cost is
+  read from build flags and source, **not profiled**. No timing was taken.
+- No loop-rate measurement exists for the manual-move path at all — the
+  ~2.31 ms/pass figure is auto-level only (see #29).
+- The conclusion that auto-level's first check is unaffected under the
+  recommended architecture follows from the 1500 ms vs ~300 ms margin above;
+  it has not been observed on hardware.
+
+**Open**
+
+- Both items are unimplemented and unapproved. Plan awaits review.
+- Everything already open stands, in particular the **Release-config
+  confirmation pass still owed before Stage C ships**, and DECISIONS #29.
+- Candidate identified but deliberately NOT folded into either item: moving
+  the trig behind the same 10 ms gate as the I2C burst. It looks like a free
+  optimisation (between real samples the inputs are identical, so sqrt/atan2
+  recompute the same result) but it would change the LPF's effective time
+  constant, which is a control-law change and squarely a #29 matter.
+
+**The next session must NOT assume**
+
+- **...that any of this plan is validated.** It is a reading of the code plus
+  an argument. The bench has seen none of it.
+- **...that the auto-level 2.31 ms/pass figure applies to manual moves.**
+- **...that per-tick sampling can share auto-level's buffer at a decimated
+  cadence.** At a 100 ms cadence the 130-slot buffer spans 13 s against a
+  1500 ms settle window, so the first `check_level()` would average pre-press
+  history and could pick the first motor direction from it. Safety-relevant.
+- **...that `tilt_fresh` can stay hardcoded 0 if Item 2 ships.** Today 0 is
+  honest; with continuous sampling it becomes wrong in the other direction.
+- **...that implementing `tilt_fresh` alone delivers the greyed-out UX.** The
+  app-side `TODO(tilt-fresh)` must be reverted too.
+
+---
+
+## 2026-08-02 (later) — Process change: second handoff artifact in docs/handoffs/
+
+**Commits: none.** Docs and config only by instruction; firmware still parked
+at `29fdf0d` and no `.c`/`.h` touched. Everything below is uncommitted.
+
+**Why.** This file is a summary written for the next session, and it keeps
+that job unchanged. But it is also being uploaded to a reviewer outside the
+repo, and a summary cannot serve as evidence of the work it summarises. The
+2026-08-02 planning session produced a full plan; the reviewer received only
+the log entry *about* it and issued a verdict anyway. That verdict is
+withdrawn. A second artifact now carries the actual plans, diffs and raw
+output.
+
+**Changed (all uncommitted)**
+
+- `docs/handoffs/` created, with `README.md` explaining the split.
+- `docs/handoffs/fw_HANDOFF_2026-08-02_01_pitch-sign-tilt-sampling-plan.md` —
+  retroactive; carries the planning session's plan **verbatim**, plus an
+  explicitly-fenced expansion listing the rejected alternatives.
+- `docs/handoffs/fw_HANDOFF_2026-08-02_02_handoff-artifact-process-change.md`
+  — this session.
+- `CLAUDE.md` — new "Session handoff file (required)" section, added
+  immediately after the existing "Session handoff (required)" section. The
+  existing section was **not** edited.
+- `.claude/hooks/check-handoff-file.ps1` — new second Stop hook.
+- `.claude/settings.json` — extended with a second Stop entry; the existing
+  entry was not rewritten.
+
+**VERIFIED**
+
+- Both Stop hooks behave correctly. Exercised by piping synthetic payloads:
+  handoff-file present → exit 0; run from a directory with no
+  `docs/handoffs/` → exit 2 with the reminder; `stop_hook_active: true` →
+  exit 0 (loop guard). Raw output in the `_02` handoff file, §d.
+- `settings.json` parses and registers exactly two Stop entries, both
+  pointing at scripts that exist.
+- Firmware untouched: `git diff --stat 29fdf0d..HEAD` lists only `.claude/`,
+  `.gitignore`, `CLAUDE.md`, `docs/SESSION_LOG.md`.
+- The planning session's plan text was still in context, so `_01` is a
+  **verbatim reproduction, not a reconstruction**. The two parts of `_01`
+  that *are* reconstruction (end-of-session `git status`; the tool-call
+  inventory) are marked as such inline.
+
+**ASSERTED**
+
+- That the hooks fire in a real session. They were pipe-tested, not observed
+  firing — and `.claude/settings.json` changed mid-session, so the settings
+  watcher may not pick the new entry up until a restart or a `/hooks` open.
+
+**Open**
+
+- Nothing is committed. Review, then commit.
+- Seven review questions carried in `_01` §f, plus process questions in
+  `_02` §f — chiefly that the hook checks only that a handoff file for today
+  *exists*, so a second session on the same date is satisfied by the first
+  session's file. Implemented as specified; flagged rather than tightened.
+- Items 1 and 2 remain unimplemented and unapproved.
+- The Release-config confirmation pass is still owed before Stage C ships.
+
+**The next session must NOT assume**
+
+- **...that `SESSION_LOG.md` is enough on its own any more.** Both artifacts
+  are required and the Stop hook enforces both.
+- **...that a pointer to a document satisfies the handoff file.** Plans go in
+  inline and in full, even when they exist elsewhere in the repo. That
+  substitution is the exact failure this change exists to prevent.
+- **...that `docs/handoffs/` files are tracked.** They are new and
+  uncommitted as of this entry.
+
+---
+
+## 2026-08-02 (later still) — Item 1 implemented; Item 2 recorded, not built
+
+Plan review came back: **Item 1 APPROVED**, **Item 2 architecture accepted in
+principle (O2.3) but NOT approved for implementation.**
+
+**Commits**
+
+- `140c37b` — Pitch on the BLE wire is POSITIVE = head raised. The only
+  firmware commit. **Firmware is no longer at `29fdf0d`.**
+- `de9c848` — DECISIONS #31 (prohibition on feeding auto-level's buffer from
+  a decimated telemetry sampler) and #32 (telemetry tilt needs its own
+  filter — open question).
+- `9878d67` — Handoff spec: per-session hook check that fails closed, plus
+  the process rulings.
+- Plus the handoff commit that follows this entry.
+
+**VERIFIED**
+
+- The behavioural change is exactly one line —
+  `out->pitch_angle_scaled = -baseline_accel_average_pitch_angle;`
+  (`bed_status.c:105`). Everything else in `140c37b` is comments.
+- The auto-level sampling path is untouched: `auto_level.c`'s diff is
+  comment-only, and `accel_running_average()`, `read_accel()`'s logic and the
+  sample buffer are byte-identical.
+- Protocol version, checked rather than assumed: firmware serves `01` from
+  `config/btconf/gatt_configuration.btconf:117`; the app's
+  `kMaxSupportedProtocolVersion` is 1 and anything higher hits
+  `tooNewRefuse` (`protocol_version.dart:17,36-37`). So bumping to `02` would
+  break the current app for a change it needs no edit to absorb. Also: that
+  value lives in a Studio-generated file, so a future bump goes through the
+  configurator.
+- The tightened Stop hook was exercised, five cases: session wrote a file
+  today → 0; older session that never wrote one, files present on disk → 2
+  (this is the tightening — it would have passed before); unparseable
+  stdin → 2; missing transcript → 2; `stop_hook_active` → 0.
+- No Item 2 code exists. `ble_bed_service.c` untouched in all three commits.
+
+**ASSERTED — everything about whether Item 1 actually works**
+
+- **Not built, not flashed, not measured.** Acceptance run: raise HEAD →
+  pitch positive; FOOT → negative; LEFT → roll positive; RIGHT → negative.
+- That it compiles. A unary minus and comment blocks, but nothing compiled it.
+- The overflow analysis (−28500..+10500 against INT16_MIN).
+- That no regression re-run is needed. Reasoned from what `bed_status_get()`
+  touches — a pure read of already-computed state, no timing or safety path —
+  not tested.
+- **Roll's convention.** `POSITIVE = LEFT raised` is read off `auto_level.c`'s
+  frame diagram, which describes the intended mounting rather than measuring
+  it. The bench run that caught the pitch sign never checked roll, and that
+  silence is not evidence. Written into `BLE_GATT_DESIGN.md` §6 as
+  **PROVISIONAL**, mirrored in `bed_status.h`'s field comment.
+
+**Open**
+
+- The four-direction sign acceptance run. Item 1 is ASSERTED until it passes,
+  and the roll line stays PROVISIONAL until then.
+- `REGRESSION_RECORD_PRE_STAGEC.md` is signed against `29fdf0d` and is now one
+  commit stale. The commit message says so and says why no re-run is required;
+  the record itself has no pointer yet.
+- **The Release-config confirmation pass is still owed before Stage C ships.**
+- Item 2: unimplemented. Rulings captured in
+  `fw_HANDOFF_2026-08-02_03` — piggyback the 1 Hz notify timer; `tilt_fresh`
+  means "age of last SUCCESSFUL sample", ~3 s threshold, keep hysteresis; app
+  revert only after 2(a) and 2(b) both land and are bench-verified.
+- Five review questions in that handoff's §f.
+
+**The next session must NOT assume**
+
+- **...that firmware is still at `29fdf0d`.** It is at `140c37b` or later, and
+  the signed regression record predates it.
+- **...that Item 1 is proven.** One line, well argued, entirely untested.
+- **...that roll's sign is established.** It is a hypothesis with a marker on
+  it. Do not build client behaviour on it.
+- **...that Item 2 may be implemented.** Accepted in principle is not
+  approved. DECISIONS #31 is a prohibition, not a design.
+- **...that the two tilt values Item 2 will create should be unified.** That
+  is DECISIONS #31's whole subject — read it before touching it.
+- **...that a handoff file left by an earlier session satisfies the Stop
+  hook.** It now requires a file written by *this* session, and it fails
+  closed.
