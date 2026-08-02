@@ -504,6 +504,21 @@ bool app_is_ok_to_sleep(void)
       return false;  // A motor is running - keep the supervision loop fast.
     }
   }
+
+  // A tilt telemetry burst also needs the loop (DECISIONS.md #33). The
+  // sampler runs from app_process_action(), so without this a standalone
+  // refresh - app connects, or REFRESH_TILT arrives, with the bed sitting
+  // still - would arm a burst and then have no loop to run on: the CPU
+  // sleeps, no passes happen, the filter never fills, nothing updates.
+  //
+  // This pins EM0 for TILT_TELEMETRY_BURST_MS. It is bounded (the burst
+  // always expires), and it can only ever happen while a phone is subscribed
+  // - tilt_telemetry_tick() will not arm a burst otherwise - so an idle bed
+  // with no app connected sleeps exactly as it does today.
+  if (tilt_telemetry_burst_active()) {
+    return false;
+  }
+
   return true;
 }
 #endif // SL_CATALOG_POWER_MANAGER_PRESENT
@@ -686,6 +701,17 @@ void app_process_action(void)
   }
 
   sample_motor_faults_tick();
+
+  // Live tilt for the app (BLE_GATT_DESIGN.md #6, DECISIONS.md #33). Both
+  // gates are passed in explicitly rather than read inside the sampler:
+  //   - nothing sampled unless a phone is actually subscribed, so a
+  //     switch-only bed is bit-for-bit unchanged;
+  //   - skipped while auto-level or settings-mode's zero-level capture is
+  //     running, because those already call accel_running_average() every
+  //     pass and bed_status.c ships their value in those states.
+  tilt_telemetry_tick(ble_bed_service_status_subscribed(),
+                      auto_level_active || in_settings_mode);
+
   bed_control_tick();
   ble_bed_service_tick();
 }

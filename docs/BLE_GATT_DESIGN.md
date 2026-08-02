@@ -100,6 +100,14 @@ offset 3  seq      u8   rolling per-connection sequence number
 | 0x04 | AUTO_LEVEL_STOP | — | — | `bed_auto_level_stop(BED_SOURCE_APP)`. |
 | 0x05 | LIGHTS_SET | 0 off / 1 on | — | `bed_lights_set(BED_SOURCE_APP, …)`. Latched. |
 | 0x06 | STOP_ALL | — | — | Explicit full stop (maps to the `app_stop_all()` path: motors + auto-level + LEDs). The app's big red button. Always accepted from **any** role, control or viewer — this is the BLE embodiment of the stop-from-anyone rule (#12). |
+| 0x07 | REFRESH_TILT | 0 | 0 | **Implemented.** Opens a tilt sampling burst (DECISIONS #33, trigger T2) so the app can pull a fresh angle on demand. **Commands no motion, cancels no motion.** Accepted from **any** role and in settings mode — see the arbitration note. Both args must be 0; anything else is REJECTED_INVALID. |
+
+**Implementation status.** 0x07 is the only opcode built. 0x01–0x06 are
+specified but not implemented and are answered `REJECTED_INVALID` (0x04) —
+deliberately, so the app can tell "not implemented yet" from "write lost".
+The write path was opened with a non-motion opcode on purpose: it proves the
+whole chain (decode, validate, defer to main loop, Command Result notify)
+on the bench before anything that can move the bed is wired to it.
 
 Notes:
 
@@ -108,10 +116,34 @@ Notes:
   100 ms repeat cadence). Loss tolerance comes from the repeated-intent
   design: a lost MOVE_START is corrected ≤100 ms later by the next repeat;
   a lost MOVE_STOP is corrected ≤300 ms later by the watchdog.
-- All opcodes except STOP_ALL are subject to arbitration: commands from a
-  VIEWER connection are rejected (result 0x02) *before* reaching
-  `bed_control` — the viewer phone is not a third source, it is a
-  non-command-capable window into the single APP source (#14).
+- All opcodes except STOP_ALL **and REFRESH_TILT** are subject to
+  arbitration: commands from a VIEWER connection are rejected (result 0x02)
+  *before* reaching `bed_control` — the viewer phone is not a third source,
+  it is a non-command-capable window into the single APP source (#14).
+
+  Two deliberate exceptions, for opposite reasons:
+
+  - **STOP_ALL** — accepted from any role because stopping must be available
+    to anyone (#12).
+  - **REFRESH_TILT** — accepted from any role because it commands nothing.
+    It opens a sampling burst, and the fresher telemetry that produces is
+    notified to *both* connections regardless of who asked. Rejecting a
+    viewer would only deny it a better reading of data it is already being
+    sent, with no safety benefit, since there is no motion to arbitrate over.
+
+  REFRESH_TILT is also accepted **in settings mode**, rather than answered
+  `REJECTED_SETTINGS_MODE` (0x03). While the zero-level capture is running,
+  the telemetry sampler stands down (its gate 2c, DECISIONS #33) because
+  settings mode is already sampling the accelerometer every pass — so the
+  refresh is harmlessly absorbed and there is no state it can disturb.
+
+- **A write handler must never do the work inline.** The Command handler in
+  `ble_bed_service.c` copies the four bytes, sets a flag, and returns; the
+  main loop acts on it one tick later. Blocking work inside a Bluetooth stack
+  callback is the confirmed mechanism behind this project's
+  `reason=0x1008` supervision-timeout drops (DECISIONS #27/#30), and
+  REFRESH_TILT's entire purpose is to cause accelerometer reads. Every opcode
+  added later inherits this rule.
 
 ## 5. Dead-man watchdog (new safety element, firmware-side)
 

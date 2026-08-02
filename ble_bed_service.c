@@ -1,11 +1,19 @@
 /*
  * ble_bed_service.c
  *
- * See ble_bed_service.h. Stage B: advertising bring-up, bonding, per-
- * connection CONTROL/VIEWER role tracking, and read-only Bed Status
- * telemetry. No Command characteristic handling yet - deliberately absent,
- * not just unimplemented, so there is no code path that can drive a motor
- * over BLE in this stage.
+ * See ble_bed_service.h. Advertising bring-up, bonding, per-connection
+ * CONTROL/VIEWER role tracking, Bed Status telemetry, and - as of the tilt
+ * telemetry work (DECISIONS.md #33) - the first Command characteristic write
+ * handler.
+ *
+ * That write path handles exactly ONE opcode, REFRESH_TILT (0x07), which
+ * commands no motion: it opens a tilt sampling burst and nothing else. Every
+ * motion opcode in BLE_GATT_DESIGN.md #4 (0x01-0x06) is answered
+ * REJECTED_INVALID. There is still no code path that can drive a motor over
+ * BLE, and that remains deliberate - the write path was opened with a
+ * harmless opcode specifically so the plumbing (decode, validate, result
+ * notify, main-loop deferral) could be proven on the bench before anything
+ * that moves the bed is wired to it.
  *
  *  Created on: Jul 12, 2026
  */
@@ -18,6 +26,8 @@
 #include "app_assert.h"
 #include "gatt_db.h"
 #include "sl_sleeptimer.h"
+
+#include "auto_level.h" // tilt_telemetry_arm_burst() - triggers T1 and T2
 
 // Security-lifecycle diagnostic logging (bonding/connection state prints
 // below, at sl_bt_evt_sm_bonded/sm_bonding_failed/sm_confirm_bonding/
@@ -129,6 +139,24 @@ void ble_bed_service_encode_status(const bed_status_t *in, bool tilt_fresh, uint
 #define STATUS_NOTIFY_IDLE_MS   1000
 #define STATUS_NOTIFY_MOVING_MS  100
 
+// Command characteristic wire format (BLE_GATT_DESIGN.md #4): 4 bytes,
+// { opcode, arg0, arg1, seq }.
+#define CMD_LEN            4
+#define CMD_OFS_OPCODE     0
+#define CMD_OFS_ARG0       1
+#define CMD_OFS_ARG1       2
+#define CMD_OFS_SEQ        3
+
+// Only opcode implemented so far. 0x01-0x06 are specified in #4 but not
+// built; they are REJECTED_INVALID rather than silently swallowed, so the
+// app can tell "not implemented yet" from "lost".
+#define CMD_OPCODE_REFRESH_TILT 0x07
+
+// Command Result codes (BLE_GATT_DESIGN.md #7).
+#define CMD_RESULT_ACCEPTED         0x00
+#define CMD_RESULT_REJECTED_INVALID 0x04
+#define CMD_RESULT_LEN              2
+
 static uint8_t advertising_set_handle = 0xff;
 
 static uint8_t open_connections[2] = { SLOT_EMPTY, SLOT_EMPTY };
@@ -142,6 +170,14 @@ static uint8_t status_subscriber_count = 0;
 static sl_sleeptimer_timer_handle_t status_notify_timer;
 static volatile bool status_notify_due = false;
 static uint8_t last_sent_status[gattdb_bed_status_len];
+
+// Deferred Command write. The stack callback ONLY fills these in and returns;
+// every decision and every side effect happens later, in main-loop context,
+// from process_pending_command(). See the handler for why (DECISIONS #27).
+static volatile bool    command_pending = false;
+static volatile uint8_t pending_command[CMD_LEN];
+static volatile uint8_t pending_command_len = 0;   // as written, before clamping
+static volatile uint8_t pending_command_conn = SLOT_EMPTY;
 
 static void start_advertising(void)
 {
@@ -205,12 +241,93 @@ static bool assign_role_if_needed(uint8_t connection)
 
 static void update_status_subscriber_count(void)
 {
+  uint8_t previous = status_subscriber_count;
   uint8_t count = (control_status_subscribed ? 1 : 0) + (viewer_status_subscribed ? 1 : 0);
   if (count == 0 && status_subscriber_count != 0) {
     // #24: nobody subscribed - stop the notify timer, no more radio traffic.
     sl_sleeptimer_stop_timer(&status_notify_timer);
   }
   status_subscriber_count = count;
+
+  // T1 (DECISIONS.md #33): first subscriber arriving. Covers both a fresh
+  // app open and a reconnect, because the resumed-bond CCCD seeding path
+  // (af369f2) lands here too. Without this the app would show whatever tilt
+  // was last computed - typically from the previous auto-level run, possibly
+  // hours old - until something else happened to open the sampling window.
+  // Arming only sets a timer; it commands no motion.
+  if (previous == 0 && count > 0) {
+    tilt_telemetry_arm_burst();
+  }
+}
+
+// Notifies the Command Result characteristic (BLE_GATT_DESIGN.md #7):
+// { seq, result }, echoed to the connection that issued the write.
+// Main-loop context only.
+static void send_command_result(uint8_t connection, uint8_t seq, uint8_t result)
+{
+  if (connection == SLOT_EMPTY) {
+    return;
+  }
+  uint8_t payload[CMD_RESULT_LEN] = { seq, result };
+  sl_status_t sc = sl_bt_gatt_server_send_notification(connection, gattdb_command_result,
+                                                        CMD_RESULT_LEN, payload);
+  (void)sc; // best-effort: no-op if the client never subscribed to results
+}
+
+// Acts on a Command write, in MAIN-LOOP context, from ble_bed_service_tick().
+//
+// Everything this function does was deliberately kept out of the stack
+// callback. That is not stylistic: DECISIONS.md #27/#30. A blocking accel
+// I2C read reached from inside a Bluetooth callback is precisely the
+// mechanism that starved the radio past its 1000 ms supervision timeout and
+// produced the reason=0x1008 drops this project has already chased twice.
+// REFRESH_TILT's whole job is to cause accelerometer reads, so handling it
+// inline in the callback would have rebuilt that bug on purpose.
+//
+// Only one write is buffered. A second arriving before the tick drains the
+// first overwrites it - acceptable while REFRESH_TILT is the only opcode
+// (two refreshes and one refresh are the same thing, and the burst extends
+// rather than stacks), but it must be revisited before MOVE_START, whose
+// 100 ms repeat cadence and dead-man semantics make a dropped write matter.
+static void process_pending_command(void)
+{
+  if (!command_pending) {
+    return;
+  }
+
+  // Snapshot before clearing the flag. Both this and the callback that sets
+  // it run in main-loop context on this part - sl_bt_on_event() is dispatched
+  // from the same super loop, not from an ISR - so no critical section is
+  // needed; the volatile qualifiers are belt-and-braces.
+  uint8_t cmd[CMD_LEN];
+  for (uint8_t i = 0; i < CMD_LEN; i++) {
+    cmd[i] = pending_command[i];
+  }
+  uint8_t len  = pending_command_len;
+  uint8_t conn = pending_command_conn;
+  command_pending = false;
+
+  // A short write has no trustworthy seq field. Echo 0 rather than a byte
+  // that was never sent; the app sees REJECTED_INVALID either way.
+  uint8_t seq = (len == CMD_LEN) ? cmd[CMD_OFS_SEQ] : 0;
+  uint8_t result = CMD_RESULT_REJECTED_INVALID;
+
+  if (len == CMD_LEN
+      && cmd[CMD_OFS_OPCODE] == CMD_OPCODE_REFRESH_TILT
+      && cmd[CMD_OFS_ARG0] == 0
+      && cmd[CMD_OFS_ARG1] == 0) {
+    // T2. Accepted from EITHER role, and accepted in settings mode - see the
+    // arbitration note in BLE_GATT_DESIGN.md #4. It commands no motion, and
+    // the fresher telemetry it produces is notified to both connections
+    // anyway, so rejecting a viewer would only deny it a better reading of
+    // data it is already being sent. In settings mode the sampler's gate 2c
+    // stands down while the zero-level capture runs, so the refresh is
+    // harmlessly absorbed.
+    tilt_telemetry_arm_burst();
+    result = CMD_RESULT_ACCEPTED;
+  }
+
+  send_command_result(conn, seq, result);
 }
 
 // Seeds control_status_subscribed/viewer_status_subscribed from the client's
@@ -334,8 +451,19 @@ static void publish_status(const uint8_t *packed, bool moving)
   restart_status_notify_timer(moving);
 }
 
+bool ble_bed_service_status_subscribed(void)
+{
+  return status_subscriber_count > 0;
+}
+
 void ble_bed_service_tick(void)
 {
+  // Drained BEFORE the subscriber check: a Command write is valid from a
+  // bonded connection whether or not it subscribed to Bed Status, and its
+  // Command Result must still be sent. Only the telemetry notify below is
+  // gated on having a subscriber.
+  process_pending_command();
+
   if (status_subscriber_count == 0) {
     return; // #24: no subscribers - no notify traffic, no accel-sampling gate to feed yet
   }
@@ -530,6 +658,44 @@ void ble_bed_service_on_event(sl_bt_msg_t *evt)
         sl_bt_gatt_server_send_user_read_response(req->connection, gattdb_client_role, 0,
                                                     1, &role_value, NULL);
       }
+      break;
+    }
+
+    // Command characteristic write (BLE_GATT_DESIGN.md #4). The Command
+    // characteristic is a VALUE-type characteristic with write_no_response,
+    // so writes surface here rather than as a user-write request.
+    //
+    // THIS HANDLER DOES NO WORK. It copies four bytes, sets a flag, and
+    // returns. It does not read the accelerometer, touch I2C, drive a motor,
+    // or notify anything. process_pending_command() does all of that one
+    // tick later from the main loop.
+    //
+    // DECISIONS.md #27/#30: blocking work inside a Bluetooth stack callback
+    // is the confirmed mechanism behind this project's reason=0x1008
+    // supervision-timeout drops. REFRESH_TILT exists to trigger accelerometer
+    // reads, so doing it here would recreate that bug exactly. Any future
+    // opcode added to this switch must obey the same rule.
+    case sl_bt_evt_gatt_server_attribute_value_id: {
+      const sl_bt_evt_gatt_server_attribute_value_t *av =
+          &evt->data.evt_gatt_server_attribute_value;
+
+      if (av->attribute != gattdb_command) {
+        break;
+      }
+
+      uint8_t copy_len = av->value.len;
+      if (copy_len > CMD_LEN) {
+        copy_len = CMD_LEN;
+      }
+      for (uint8_t i = 0; i < CMD_LEN; i++) {
+        pending_command[i] = (i < copy_len) ? av->value.data[i] : 0;
+      }
+      // Keep the length AS WRITTEN, not the clamped copy length, so
+      // process_pending_command() can reject a wrong-length write instead of
+      // silently accepting a truncated or padded one.
+      pending_command_len  = av->value.len;
+      pending_command_conn = av->connection;
+      command_pending = true;
       break;
     }
 

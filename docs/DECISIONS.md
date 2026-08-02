@@ -799,6 +799,13 @@ implementation**. No sampler exists yet. This entry is the prohibition only.
 
 ## 32. Telemetry tilt needs its own filter — open design question against Item 2
 
+**CLOSED by #33.** The answer is: the same filter as auto-level (same
+130-sample running average, same LPF, same per-pass rate), on separate
+storage. Kept below as written — the reasoning about *why* an unfiltered
+telemetry value would have been wrong is still the justification for sharing
+the filter rather than inventing a lighter one. The ms-not-samples constraint
+at the end still stands for any future change to either chain.
+
 Recorded as open, not decided. Do not treat the absence of an answer here as
 permission to skip the question.
 
@@ -838,3 +845,143 @@ Open sub-questions, none answered here:
 
 Not designed here, by instruction. This entry exists so the question is not
 rediscovered after the display is found to be jittery on a bench unit.
+
+## 33. Live tilt telemetry — separate sampler, four triggers, and the first Command write path
+
+The positive half of #31, recorded now that it is built rather than
+prohibited. #31 says what must not be done; this says what was done.
+Implements the app-era plan deferred in #17 and specified in
+BLE_GATT_DESIGN #6.
+
+### The problem
+
+`accel_running_average()` ran only inside auto-level and the settings
+zero-level capture, so `baseline_accel_average_*` — the values
+`bed_status.c` ships in every Bed Status notification — were frozen at
+whatever the last auto-level run computed, sometimes hours earlier. A user
+levelling the bed by hand from the wall switch, which is the common case,
+watched a dead number on the phone.
+
+### One window, four triggers
+
+There is **one** sampling window. While it is open the telemetry sampler
+runs on every main-loop pass — the same rate auto-level's sampler runs at,
+which is what makes the shared filter behave identically in both. The window
+is open when **a motor is energised OR a burst timer is running**.
+
+Four things arm the burst. Arming is idempotent and *extends* a running
+burst (`sl_sleeptimer_restart_timer`), so bursts never stack:
+
+| | Trigger | Armed from |
+|---|---|---|
+| T1 | `status_subscriber_count` 0 → 1 (app opens or reconnects) | `update_status_subscriber_count()` |
+| T2 | a `REFRESH_TILT` command arrives | main-loop command handler |
+| T3 | motors transition any-on → all-off | `tilt_telemetry_tick()` |
+| T4 | auto-level | nothing added — its own sampler already covers it |
+
+**T3 is the one that matters most and is the least obvious.** While motors
+run, the accelerometer sees frame vibration and the actuators' own dynamic
+acceleration, so the last in-motion sample is the *least* trustworthy of the
+whole move — and it is exactly the sample the user would otherwise be left
+staring at. The burst carries sampling past the end of motion so the number
+they finally read is a settled one. Auto-level's own 1500 ms steady-read
+exists for the same physical reason.
+
+**Arming commands nothing.** It sets a timer. It cannot start, stop, or
+delay a motor, and it cancels nothing. A movement starting mid-burst is not
+a conflict: the window is already open, it stays open, and T3 re-arms when
+that movement ends. There is deliberately **no arbitration** between the
+sampler and the motion path, and none should be added — an interlock is the
+obvious-looking change here and it would be the wrong one, because there is
+nothing to interlock.
+
+### Gates
+
+- **Subscriber gate.** Nothing samples, and no burst arms, unless at least
+  one connection has Bed Status notifications on. A switch-only bed with no
+  phone is bit-for-bit what it was, including never vetoing sleep — which is
+  what keeps the existing regression baseline valid for that configuration.
+- **Other-sampler gate.** Skipped entirely while auto-level or the settings
+  zero-level capture is running. Those already sample every pass; running
+  both would put two samplers on the bus per pass and halve the effective
+  averaging window in time.
+
+### Storage is the constraint, not the algorithm
+
+The filter is deliberately **shared**: same `NUM_ACCEL_READINGS`-deep running
+average, same low-pass filter, same per-pass rate, so the app's number is as
+smooth as auto-level's and the two cannot drift apart as one is tuned.
+
+The **storage** is deliberately **not** shared. `accel_filter_state_t` holds
+the buffer, index, running sums, LPF accumulator and outputs; there are two
+instances and the shared code takes a caller-supplied pointer. Telemetry must
+never write auto-level's buffer — that is #31, and the arithmetic for why is
+there.
+
+`read_accel()` was split as part of this: it now produces `latest_*_scaled`
+and nothing more, with the low-pass filter moved into
+`accel_filter_update()` so each chain filters into its own state. Auto-level's
+arithmetic, ordering and per-pass rate are unchanged; its outputs are mirrored
+back into the same globals every existing reader already uses.
+
+### Burst duration
+
+`TILT_TELEMETRY_BURST_MS`, 500 ms, in milliseconds via sleeptimer (#2), never
+loop passes (#29). At the measured ~2.31 ms/pass that is ~200 passes,
+comfortably more than the 130-slot filter needs to fill. Bench-tunable: longer
+gives the filter more convergence margin and the frame more time to stop
+rocking, but pins EM0 for that window; shorter risks freezing the display
+before the bed has settled, which defeats T3.
+
+### Sleep
+
+`app_is_ok_to_sleep()` now also vetoes sleep while a burst is running. Without
+it a standalone refresh — app connects, or REFRESH_TILT arrives, with the bed
+sitting still — would arm a burst and have no loop to run on. This pins EM0
+for the burst duration, bounded, and only ever while a phone is subscribed.
+
+### Still deferred, deliberately
+
+- **`tilt_fresh` stays hardcoded 0.** Between bursts the value genuinely *is*
+  stale, so 0 remains honest, and the app's `TODO(tilt-fresh)` ungating stays
+  correct. Implementing it only becomes meaningful alongside idle sampling.
+- **Idle sampling** (the ~1 Hz "connected but nothing happening" cadence in
+  BLE_GATT_DESIGN #6) is not built. The four triggers cover the cases a user
+  actually notices; a periodic idle wake next to the radio's schedule is new
+  behaviour that has never been on the bench, and it is separable.
+
+### Why the write path opened with a non-motion opcode
+
+`REFRESH_TILT` (0x07) is the first Command characteristic write this firmware
+has ever handled. It was chosen to go first *because* it cannot move the bed:
+it proves the whole chain — decode, validate, defer to the main loop, notify
+Command Result — on real hardware before anything that drives a motor is
+wired to it. Motion opcodes 0x01–0x06 are answered `REJECTED_INVALID` rather
+than silently swallowed, so the app can distinguish "not built yet" from
+"write lost".
+
+**The handler does no work in the stack callback.** It copies four bytes, sets
+a flag, and returns; the main loop acts one tick later. This is #27/#30: a
+blocking call inside a Bluetooth callback is the confirmed mechanism behind
+this project's `reason=0x1008` supervision-timeout drops, and REFRESH_TILT's
+entire purpose is to trigger accelerometer reads — handling it inline would
+have rebuilt that bug deliberately. Every opcode added later inherits the rule.
+
+### Status
+
+**ASSERTED. Not built, not flashed, not measured.** The acceptance run,
+including a before/after loop-rate measurement on the manual-move path and a
+re-run of REGRESSION.md §5 collision detection, is specified in
+`docs/handoffs/fw_HANDOFF_2026-08-02_04_*.md`. #29 is why the loop-rate
+measurement is part of acceptance and not a follow-up: collision timing is
+loop-pass calibrated, so a change in passes/sec on the manual-move path *is*
+a change in collision behaviour.
+
+**Closes #32.** That entry asked how the telemetry value should be filtered.
+The answer is above: the same filter as auto-level, on separate storage. The
+concern behind it — that a raw unfiltered value would jitter at idle and
+crawl while moving — does not arise, because the telemetry chain is the same
+130-sample average and LPF fed at the same per-pass rate, giving the same
+~300 ms window and the same smoothness. #32's constraint that any such filter
+be sized in milliseconds rather than samples still stands for any future
+change to either chain, and is unresolved for both of them equally (#29).

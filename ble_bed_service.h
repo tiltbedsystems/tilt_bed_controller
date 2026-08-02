@@ -7,12 +7,14 @@
  * tracking (assigned once a connection finishes bonding, not at raw
  * connection-open), and the adaptive Bed Status notify cadence (#6/#24).
  *
- * This module is glue, not a second source of truth: Stage C (not yet
- * built) will feed decoded Command writes into the existing bed_control.c
- * verbs exactly as a physical switch press does today - no bed logic is
- * reimplemented here. Stage B (current) is read-only: advertising +
- * telemetry only, no command write handling, so there is no way to drive a
- * motor over BLE yet.
+ * This module is glue, not a second source of truth: Stage C will feed
+ * decoded Command writes into the existing bed_control.c verbs exactly as a
+ * physical switch press does today - no bed logic is reimplemented here.
+ *
+ * The Command write path now exists but carries exactly one opcode,
+ * REFRESH_TILT (0x07), which commands no motion. Motion opcodes 0x01-0x06
+ * are specified in BLE_GATT_DESIGN.md #4 and answered REJECTED_INVALID, so
+ * there is still no way to drive a motor over BLE.
  *
  *  Created on: Jul 12, 2026
  */
@@ -39,9 +41,17 @@ void ble_bed_service_encode_status(const bed_status_t *in, bool tilt_fresh, uint
 // Called from app.c's sl_bt_on_event(), which stays a thin forwarder.
 void ble_bed_service_on_event(sl_bt_msg_t *evt);
 
-// Call once per app tick (from app_process_action()). Drives the adaptive
-// Bed Status notify cadence (BLE_GATT_DESIGN.md #6/#24) - a no-op whenever
-// nothing is subscribed.
+// Call once per app tick (from app_process_action()). Drains any pending
+// Command write in main-loop context (never in the stack callback - see
+// process_pending_command()) and drives the adaptive Bed Status notify
+// cadence (BLE_GATT_DESIGN.md #6/#24), which is a no-op whenever nothing is
+// subscribed.
 void ble_bed_service_tick(void);
+
+// True while at least one connection has Bed Status notifications enabled.
+// app_process_action() passes this to tilt_telemetry_tick() as its master
+// gate: no subscriber, no accelerometer sampling and no sleep veto, so a
+// switch-only bed with no phone is unchanged (DECISIONS.md #33).
+bool ble_bed_service_status_subscribed(void);
 
 #endif /* BLE_BED_SERVICE_H_ */
