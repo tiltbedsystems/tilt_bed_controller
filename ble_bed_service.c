@@ -181,6 +181,19 @@ void ble_bed_service_encode_status(const bed_status_t *in, bool tilt_fresh, uint
 // stopping the bed.
 #define MOVE_WATCHDOG_MS 300
 
+// After a two-source conflict force-stops the bed, app motion commands are
+// refused for this long (DECISIONS.md #12, #35). Without it the app's 100 ms
+// MOVE_START repeat simply restarts the bed a tick after the wall switch
+// stopped it, which is the "stop then hand over" behaviour the stop-from-
+// anyone rule exists to prevent.
+//
+// BENCH-TUNABLE. Milliseconds via sleeptimer (DECISIONS.md #2), never loop
+// passes. Long enough to outlast several app repeats and to read as a
+// deliberate stop rather than a glitch; short enough that a user who really
+// does want the app to take over only has to re-press. 500 ms is a starting
+// point, not a measured value.
+#define TWO_SOURCE_LOCKOUT_MS 500
+
 static uint8_t advertising_set_handle = 0xff;
 
 static uint8_t open_connections[2] = { SLOT_EMPTY, SLOT_EMPTY };
@@ -234,6 +247,12 @@ static uint8_t last_move_seq = 0;                    // echoed on WATCHDOG_STOP
 static bool            app_move_active = false;
 static bed_target_t    app_move_target = BED_TARGET_HEAD;
 static bed_direction_t app_move_dir    = BED_DIR_UP;
+
+// Two-source conflict lockout (#35). While this is running, app motion
+// commands are refused so the app's repeat cannot restart a bed the other
+// source just stopped.
+static sl_sleeptimer_timer_handle_t two_source_lockout_timer;
+static volatile bool two_source_lockout_active = false;
 
 static void start_advertising(void)
 {
@@ -362,6 +381,25 @@ static void move_watchdog_cancel(void)
   sl_sleeptimer_stop_timer(&move_watchdog_timer);
 }
 
+static void two_source_lockout_callback(sl_sleeptimer_timer_handle_t *handle, void *data)
+{
+  (void)handle;
+  (void)data;
+  two_source_lockout_active = false;
+}
+
+// Starts (or extends) the post-conflict lockout. Called whenever the app's
+// motion is taken away by the other source - either because bed_control
+// force-stopped an app command, or because the bed went idle underneath a
+// move the app still believed it held.
+static void two_source_lockout_arm(void)
+{
+  two_source_lockout_active = true;
+  sl_sleeptimer_restart_timer(&two_source_lockout_timer,
+                               sl_sleeptimer_ms_to_tick(TWO_SOURCE_LOCKOUT_MS),
+                               two_source_lockout_callback, NULL, 0, 0);
+}
+
 // Main-loop context. Called every tick.
 static void service_move_watchdog(void)
 {
@@ -369,12 +407,29 @@ static void service_move_watchdog(void)
     return;
   }
 
-  // The move ended without the app telling us: a collision trip, or a limit
-  // stop that returned the bed to idle. Nothing left to guard.
-  if (any_collision || app_bed_is_idle()) {
+  if (any_collision) {
+    // The collision handler owns the stop and its LED sequence from here.
+    // Nothing left for the watchdog to guard, and letting it expire into an
+    // app_stop_all() would cut across that sequence.
     move_watchdog_cancel();
     app_move_active = false;
     return;
+  }
+
+  if (app_bed_is_idle() && app_move_active) {
+    // The bed stopped underneath a move the app still believed it held - the
+    // wall switch took it (DECISIONS #12), or a limit stop ended it.
+    //
+    // Clear our belief, and lock the app out briefly so its 100 ms repeat
+    // cannot immediately restart a bed the other source just stopped.
+    //
+    // DO NOT cancel the watchdog here. It guards the LINK, not the bed: if
+    // the app is still there it re-arms on the next repeat, and if the link
+    // is gone it must still expire into a full stop. Cancelling it here was
+    // the defect - it disarmed the dead-man protection at exactly the moment
+    // the bed's state was in dispute.
+    app_move_active = false;
+    two_source_lockout_arm();
   }
 
   if (!move_watchdog_expired) {
@@ -477,6 +532,16 @@ static void process_pending_command(void)
     return;
   }
 
+  // Post-conflict lockout (#35). Applies to the motion-starting opcodes only:
+  // stops must always work, LIGHTS moves nothing, and REFRESH_TILT returned
+  // above. Reported as FORCE_STOPPED_OTHER_SOURCE because that is what it is
+  // - the tail of the force-stop the other source just caused.
+  if (two_source_lockout_active
+      && (opcode == CMD_OPCODE_MOVE_START || opcode == CMD_OPCODE_AUTO_LEVEL_START)) {
+    send_command_result(conn, seq, CMD_RESULT_FORCE_STOPPED_OTHER_SOURCE);
+    return;
+  }
+
   uint8_t result = CMD_RESULT_REJECTED_INVALID;
 
   switch (opcode) {
@@ -498,8 +563,12 @@ static void process_pending_command(void)
       if (!app_move_active) {
         if (!bed_move_start(BED_SOURCE_APP, target, dir)) {
           // The wall switch holds the lock; bed_control turned this into a
-          // full stop instead (DECISIONS #12).
+          // full stop instead (DECISIONS #12). The app's movement does NOT
+          // start, and the lockout stops its 100 ms repeat from restarting
+          // the bed a tick later - which was the "stop then hand over"
+          // behaviour (#35).
           move_watchdog_cancel();
+          two_source_lockout_arm();
           result = CMD_RESULT_FORCE_STOPPED_OTHER_SOURCE;
           break;
         }
@@ -535,6 +604,7 @@ static void process_pending_command(void)
       move_watchdog_cancel();
       app_move_active = false;
       if (!bed_auto_level_start(BED_SOURCE_APP)) {
+        two_source_lockout_arm(); // #35, same reasoning as MOVE_START
         result = CMD_RESULT_FORCE_STOPPED_OTHER_SOURCE;
         break;
       }
@@ -557,6 +627,7 @@ static void process_pending_command(void)
       }
       // Latched, no watchdog, no motion.
       if (!bed_lights_set(BED_SOURCE_APP, arg0 == 1)) {
+        two_source_lockout_arm(); // #35 - this one force-stopped the bed too
         result = CMD_RESULT_FORCE_STOPPED_OTHER_SOURCE;
         break;
       }

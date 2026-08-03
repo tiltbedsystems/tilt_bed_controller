@@ -1086,3 +1086,130 @@ Compiles clean (see the handoff). **Everything else is ASSERTED** — no bench
 run yet. The watchdog, the disconnect stop, and wall-switch arbitration
 against a live app move are the three behaviours least like anything
 previously exercised on hardware.
+
+## 35. The 10 Hz app-move stutter — a physical-panel check running on app moves
+
+Root cause of the Stage C bench bug, and the two related defects fixed with
+it. Read this before touching `active_switch` or the double-press check.
+
+### Symptom
+
+Hold a single-side direction in the app, involve the physical switch panel,
+and the bed stutters at ~10 Hz — motors on and off at the app's 100 ms
+MOVE_START repeat interval. It survived closing the app and only cleared on a
+board reset. It attached to whichever app command type was in use during the
+conflict: single-side, or ALL, but not both.
+
+### Root cause
+
+`switch_input_tick()`'s **double-press error check** was running on
+app-sourced moves.
+
+That check exists to catch two physical buttons pressed at once. It compares
+`app_ui_status` — the switch-board status word latched at the last *physical*
+switch interrupt — against a fresh read taken 50 ms later, and declares a
+double press if they **match**. On a match it kills the motors, sets
+`active_switch = OFF`, and clears the LEDs.
+
+Its only guard was `active_switch != OFF`. An app move sets `active_switch`
+through the same `motor_button_pressed()` the switch path uses (that sharing
+is deliberate and is what makes Bed Status report app activity for free), so
+the check ran on app moves too.
+
+The loop:
+
+1. App MOVE_START repeat → `bed_move_start()` → `active_switch` set,
+   `initial_switch_press = true` → `app_apply_move_outputs()` → motors on.
+2. Next tick, the block starts the 50 ms double-press timer.
+3. Timer fires. No physical button is pressed, so the fresh status read can
+   equal the stale latched one → **bogus "Double Press Error"** → motors off,
+   `active_switch = OFF`.
+4. `service_move_watchdog()`'s idle branch sees `app_bed_is_idle()` → clears
+   `app_move_active`.
+5. The next repeat, within 100 ms, starts the move from scratch. Go to 1.
+
+The app's repeat interval is the rate limiter, which is why the stutter is at
+exactly 10 Hz.
+
+### Why the asymmetry — the LED bits are the fingerprint
+
+The status word is not just switches. Port 1 bits 4-7 are the **LED enable
+lines** (`EN_REDn`, `EN_GREENn`, `EN_BLUEn`, `EN_AMBERn`).
+
+That is what normally makes a legitimate *physical* hold safe: the status is
+latched at the interrupt, then `process_outputs()` lights that move's LED, so
+the read 50 ms later differs and no error fires.
+
+It is also what makes the bug selective. The latched `app_ui_status` freezes
+whichever LED was lit at the last physical interrupt, and a subsequent app
+move only matches it if it lights the **same** LED:
+
+| App command | LED | Stutters if that LED was lit at the last physical interrupt |
+|---|---|---|
+| single side | GREEN | yes |
+| ALL up/down | BLUE | yes |
+| auto-level | RED | n/a — excluded by `!auto_level_active` on the same line |
+
+Hence "the stutter attaches to whichever app command type was in use during
+the conflict". Auto-level was never affected because the enclosing condition
+already excluded it — an independent confirmation of the mechanism.
+
+### Why it survived closing the app
+
+`app_ui_status` is only rewritten by a **physical** switch interrupt. Closing
+the app, reopening it, or swapping transport does not touch it, so the primed
+value persisted and the stutter resumed as soon as the repeats did. A board
+reset reinitialised it. (The earlier guess that the missing watchdog explained
+the persistence was wrong — the watchdog re-armed on every repeat. The latched
+status word is the state that survived.)
+
+### Fix, and why NOT to separate `active_switch`
+
+The check is gated on `bed_active_source() == BED_SOURCE_SWITCHES` — one
+condition, alongside the `!auto_level_active` and `!in_settings_mode`
+exclusions already on that line, and semantically exact: a physical-panel
+consistency check has no business running on a move the panel did not start.
+
+`run_motor_supervision()` is deliberately left **outside** that gate.
+Collision and limit supervision must cover app moves; gating the whole block
+would have silently removed them.
+
+Splitting `active_switch` into per-source state was considered and rejected.
+It is not the root cause — the root cause is a panel-specific check with too
+weak a guard — and the sharing pays for itself: it is why Bed Status reports
+app activity with no extra code. Splitting it would touch `bed_status.c`,
+`bed_actions.c`, `app.c`'s auto-level gate, `settings_mode.c`,
+`switch_input.c`, and the limit/collision supervision, all of which read it,
+for no benefit the one-line gate does not already deliver.
+
+### Two related defects fixed at the same time
+
+**The watchdog was being silently disarmed.** The idle branch called
+`move_watchdog_cancel()` whenever the bed looked idle, including while the app
+still held a move and the bed's ownership was in dispute — exactly when the
+dead-man protection matters. It now cancels only on a collision, where the
+collision handler owns the stop and an expiry would cut across its LED
+sequence. On plain idle it clears `app_move_active` and **leaves the watchdog
+armed**: the watchdog guards the *link*, not the bed. A live app re-arms it on
+the next repeat; a dead link still expires into a full stop.
+
+**Two-source conflict now stops instead of handing over.** Previously an app
+command arriving while the wall switch held the bed force-stopped it, and then
+the app's next 100 ms repeat found the lock released and started the app's
+movement — stop-then-takeover, which is neither what #12 says nor what the app
+was told happened. A force-stop now arms a `TWO_SOURCE_LOCKOUT_MS` (500 ms,
+bench-tunable, #2) lockout during which app MOVE_START and AUTO_LEVEL_START
+are refused with `FORCE_STOPPED_OTHER_SOURCE`. The same lockout arms when the
+bed goes idle underneath a move the app believed it held, which covers the
+other direction: a wall switch press during an app move stops the bed and does
+not hand control over.
+
+Stops are never locked out. STOP_ALL, MOVE_STOP, AUTO_LEVEL_STOP and
+REFRESH_TILT are unaffected.
+
+### Status
+
+Compiles clean. **ASSERTED** until the bench run — and the root cause is
+falsifiable from the existing UART log, which should show a bogus
+`Double Press Error` repeating at ~10 Hz during the stutter, from the printf
+already present in `switch_input.c`.

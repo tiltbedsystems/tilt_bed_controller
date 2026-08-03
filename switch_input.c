@@ -335,15 +335,46 @@ void switch_input_tick(void)
           scan_all_currents();
           initial_switch_press = false;
 
-          // Double press error check timer
-          sl_sleeptimer_is_timer_running(&double_press_error_timer, &is_double_press_error_timer_on);
-          if (!is_double_press_error_timer_on){
-              start_double_press_error_timer();
+          // Double press error check timer. Not started for an app-sourced
+          // move - there is no second physical button to catch, and the
+          // check below is gated on the same condition anyway. Belt and
+          // braces: this also stops the periodic timer being left running
+          // across a source change.
+          if (bed_active_source() == BED_SOURCE_SWITCHES){
+              sl_sleeptimer_is_timer_running(&double_press_error_timer, &is_double_press_error_timer_on);
+              if (!is_double_press_error_timer_on){
+                  start_double_press_error_timer();
+              }
           }
       }
       run_motor_supervision(active_switch, is_raising);
 
-      if (double_press_error_timer_timeout){
+      // The double-press check below is a PHYSICAL SWITCH PANEL consistency
+      // check and must only run on a move the panel actually started.
+      //
+      // It compares the switch-board status latched at the last physical
+      // switch interrupt against a fresh read, and calls them a double press
+      // if they match. That status word includes the LED enable bits
+      // (P1_4-P1_7), which is what normally makes a legitimate physical hold
+      // differ from its own latched value - the LED for that move turns on
+      // after the latch.
+      //
+      // An APP move sets active_switch through the same
+      // motor_button_pressed() the switch path uses, so before this gate the
+      // check ran on app moves too. With no physical button pressed, the
+      // fresh read matched the stale latched value whenever the app's LED
+      // happened to be the one that was lit at the last physical interrupt -
+      // firing a bogus "Double Press Error" that killed the motors and set
+      // active_switch = OFF, which the app's next 100 ms MOVE_START repeat
+      // then undid. That was the 10 Hz stutter, and the LED bits are why it
+      // only affected whichever app command type was in use during the
+      // conflict (green = single side, blue = ALL, red = auto-level).
+      //
+      // run_motor_supervision() above is deliberately OUTSIDE this gate:
+      // collision and limit supervision must cover app moves too.
+      bool switch_sourced_move = (bed_active_source() == BED_SOURCE_SWITCHES);
+
+      if (double_press_error_timer_timeout && switch_sourced_move){
           double_press_error_timer_timeout = false;
 
           // Get source of switch interrupt
