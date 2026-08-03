@@ -634,3 +634,110 @@ auto-level).
   touching it.
 - **...that `tilt_fresh`, the pairing window, or #29's loop-pass constants
   were touched.** All explicitly out of scope and untouched.
+
+---
+
+## 2026-08-02 (sixth) — Stage C stutter root-caused; watchdog and arbitration fixed
+
+**Commits**
+
+- `a22406f` — Fix the 10 Hz app-move stutter. Plus the handoff commit after
+  this entry.
+
+**Root cause (VERIFIED as a code fact; its match to the symptom is ASSERTED)**
+
+`switch_input_tick()`'s **double-press error check** was running on
+app-sourced moves. It is a physical-panel consistency check: it compares
+`app_ui_status` — latched at the last *physical* switch interrupt
+(`switch_input.c:397`, the sole writer) — against a fresh read 50 ms later,
+and on a **match** kills all four motors and sets `active_switch = OFF`
+(`switch_input.c:363-365`). Its only guard was `active_switch != OFF`
+(`:333`), and an app move sets `active_switch` through the same
+`motor_button_pressed()` the switch path uses (`bed_actions.c:45`).
+
+So: repeat → motors on → check fires ~50 ms later → motors off,
+`active_switch = OFF` → watchdog idle branch clears `app_move_active` → next
+repeat 100 ms later starts over. The app's repeat interval is the rate
+limiter, hence exactly 10 Hz.
+
+**The asymmetry is the LED bits.** The status word includes the LED enable
+lines (`switch_input.c:62-69`, P1_4–P1_7). That is what normally makes a
+legitimate physical hold safe — the latch happens before `process_outputs()`
+lights the LED, so the re-read differs. It is also why the bug was selective:
+the latched value freezes whichever LED was lit at the last physical
+interrupt, so a later app move matches only if it lights the same one. Green
+= single-side, blue = ALL. Auto-level was never affected because
+`(!auto_level_active)` was already on that line — which the code predicted
+for free, and is the strongest confirmation of the mechanism.
+
+**It survived closing the app** because `app_ui_status` is only rewritten by
+a physical switch interrupt. **This corrects the brief's guess** that the
+missing watchdog explained the persistence — the watchdog re-armed on every
+repeat. The latched status word is what survived.
+
+**Fix:** gate the check on `bed_active_source() == BED_SOURCE_SWITCHES`.
+`run_motor_supervision()` deliberately left OUTSIDE that gate — gating the
+whole block would have silently removed collision and limit supervision from
+app moves.
+
+**`active_switch` was NOT split per source**, deliberately. Every other reader
+behaves correctly when the app writes it; exactly one reader was wrong, and it
+was wrong because it lacked a predicate, not because the variable is shared.
+Splitting would touch six files across the safety path and lose the Bed Status
+property. Full reasoning in the handoff §b.5.
+
+**Also fixed**
+
+- **Watchdog silent disarm.** Now cancels only on collision; on plain idle it
+  clears `app_move_active` but **leaves the watchdog armed** — it guards the
+  link, not the bed.
+- **Two-source conflict stops instead of handing over.** New
+  `TWO_SOURCE_LOCKOUT_MS` = 500 ms (sleeptimer, bench-tunable, #2). Armed on a
+  force-stop and on the bed going idle under a move the app believed it held
+  (which covers the switch-interrupts-app direction). Stops are never locked
+  out.
+
+**VERIFIED**
+
+- Builds clean, `base` config, zero warnings.
+- A wrong theory was falsified before committing to the right one: I suspected
+  `get_ui_status()` overwrote the global it is compared against, which would
+  make the comparison always-true. It uses a local (`exp_ui.c:253-258`); the
+  line that looks like the assignment is inside a comment block
+  (`switch_input.c:56-58`).
+
+**ASSERTED**
+
+- **That this is the root cause of the observed stutter.** Derived from code.
+  It explains all six observations, both halves of the asymmetry, and the
+  persistence — but nothing has been run.
+- That the gate removes the stutter, the watchdog survives a disputed idle,
+  and the lockout stops the takeover. All unrun.
+- 500 ms is chosen, not measured.
+
+**Open**
+
+- **Acceptance step 0 confirms the root cause with no new firmware**: the
+  existing `printf("Double Press Error\r\n")` should be repeating at ~10 Hz in
+  the failing log. If it is absent, the diagnosis is wrong.
+- Steps a–h in `fw_HANDOFF_2026-08-02_06`. Step (g.5) and (g.6) are the
+  regression checks this fix could plausibly have caused: does the *real*
+  physical double-press still error, and does collision still trip on an app
+  move.
+- Four review questions, chiefly whether the lockout should expire (current)
+  or latch until MOVE_STOP.
+- Manual-move loop-rate measurement still owed; Release-config pass still
+  owed.
+
+**The next session must NOT assume**
+
+- **...that the stutter is fixed.** The root cause is argued from code and
+  compiles; nothing has been on hardware.
+- **...that the double-press check is now sound.** It still relies on the LED
+  bits changing between latch and re-read to avoid false positives on
+  legitimate physical holds. That is incidental, not designed, and untouched.
+- **...that gating the block on source was safe by inspection.**
+  `run_motor_supervision()` shares that block; if a future edit moves the gate
+  outward, app moves lose collision protection silently.
+- **...that the lockout latches.** It expires after 500 ms and a held app
+  button will then restart the bed.
