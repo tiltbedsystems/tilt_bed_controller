@@ -816,3 +816,51 @@ gate is unchanged and `run_motor_supervision()` is still outside it.
 - **...that a limit stop pauses anything now.** #35's idle branch armed the
   500 ms lockout; it no longer does, so a held app button restarts the move
   after a limit stop. Raised as review question 3.
+
+---
+
+## 2026-08-04 — CORRECTION: the entry above is dated wrong
+
+**Commits:** the correction commit that follows this entry. No code change.
+
+**The entry above is headed "2026-08-02 (seventh)". It ran on 2026-08-04.** I
+carried the date forward from the previous sessions in the same conversation
+without checking the clock. Corrected here rather than by editing that entry,
+per this file's own append-only rule.
+
+**What was actually wrong, and what was not.** `git log --date=short` is the
+evidence:
+
+```
+fef5323 2026-08-04 Handoff for 5351aef: ...
+5351aef 2026-08-04 Auto-level hold-to-run; two-source conflict becomes a latched inhibit
+e0d764b 2026-08-02 Handoff for a22406f: ...
+...
+140c37b 2026-08-02 Pitch on the BLE wire is POSITIVE = head raised
+```
+
+So only the last session was misdated. Every earlier entry and every handoff
+file `_01` through `_06` genuinely ran on 2026-08-02 and is correctly named.
+
+**The handoff file was misnamed and has been replaced.**
+`fw_HANDOFF_2026-08-02_07_holdtorun-autolevel-and-conflict-latch.md` is
+deleted; `fw_HANDOFF_2026-08-04_01_holdtorun-autolevel-and-conflict-latch.md`
+carries the identical body plus a correction note. Deleting rather than
+keeping both avoids two copies of one session's evidence in a
+date-ordered directory.
+
+**How it was caught: the Stop hook.** This is the first time
+`check-handoff-file.ps1`'s per-session, fail-closed check has actually caught
+something. It blocked the session because no file matching *today's* date had
+been written. The looser version originally built — existence-only, any file
+for today — would have passed silently here, and the misdated file would have
+gone to the reviewer under the wrong date. Worth recording as evidence that
+the tightening was worth doing.
+
+**The next session must NOT assume**
+
+- **...that a date carried over from earlier in a conversation is today's
+  date.** Check it. Handoff filenames are date-keyed and the reviewer orders
+  by them.
+- **...that entry headings in this file are reliable dates.** The one above is
+  wrong and is corrected here, not rewritten.

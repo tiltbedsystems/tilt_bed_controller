@@ -1,4 +1,51 @@
-# fw_HANDOFF_2026-08-02_07 — auto-level hold-to-run; conflict becomes a latched inhibit
+> **FILENAME CORRECTION — read this first.**
+>
+> This session's handoff was originally written as
+> `fw_HANDOFF_2026-08-02_07_holdtorun-autolevel-and-conflict-latch.md`. **That
+> date was wrong.** This session ran on **2026-08-04**; I carried 2026-08-02
+> forward from the previous sessions in the same conversation without checking
+> the clock. The Stop hook caught it, which is the first time that hook has
+> earned its keep.
+>
+> The misdated file has been deleted and replaced by this one. Nothing else
+> about it changed — the body below is byte-identical to what was committed in
+> `fef5323`, apart from this note and the corrected header fields.
+>
+> **The other handoff files are NOT affected.** `_01` through `_06` were all
+> committed on 2026-08-02 (`git log --date=short` confirms: `140c37b` through
+> `e0d764b` are all 2026-08-02), so their names are correct. Only this one was
+> wrong, and only because it was written two days after the batch it followed.
+>
+> **Corrected header values**, superseding §a below where they differ:
+>
+> | Field | Correct value |
+> |---|---|
+> | Session date | **2026-08-04** |
+> | HEAD before session | `e0d764b` |
+> | HEAD after the work commit | `5351aef` |
+> | HEAD after the (misdated) handoff commit | `fef5323` |
+> | HEAD after this correction | see the commit that adds this file |
+>
+> `git status` at the end of this correction:
+>
+> ```
+> On branch main
+> Your branch is ahead of 'origin/main' by 31 commits.
+>
+> Changes not staged for commit:
+> 	modified:   .projectlinkstore
+>
+> Untracked files:
+> 	.projectchecksums
+> 	tilt_bed_controller_project.pdf
+> ```
+>
+> The `git status` block inside §a was captured before the handoff commit and
+> is left as it was, since it was accurate at the moment it was taken.
+
+---
+
+# fw_HANDOFF_2026-08-04_01 — auto-level hold-to-run; conflict becomes a latched inhibit
 
 Three behaviour changes from the Stage C bench. The #35 stutter fix is
 bench-confirmed and untouched.
@@ -16,7 +63,7 @@ all 30 checks pass. Everything above it is ASSERTED until the bench run.
 | Branch | `main` |
 | HEAD before session | `e0d764b` |
 | HEAD after session | `5351aef` (plus this handoff's own commit) |
-| Session date | 2026-08-02 |
+| Session date | 2026-08-04 (see the correction note above) |
 | Build | Firmware clean, `base` config. Host unit test: 30/30 pass. Not flashed. |
 
 ### Commits this session
