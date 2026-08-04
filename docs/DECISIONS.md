@@ -1213,3 +1213,110 @@ Compiles clean. **ASSERTED** until the bench run — and the root cause is
 falsifiable from the existing UART log, which should show a bogus
 `Double Press Error` repeating at ~10 Hz during the stutter, from the printf
 already present in `switch_input.c`.
+
+## 36. Auto-level becomes hold-to-run; two-source conflict becomes a latched inhibit
+
+Three bench-driven behaviour changes, from the Stage C run that also produced
+#35. #35's stutter fix is bench-confirmed and untouched here.
+
+### Auto-level is hold-to-run
+
+`AUTO_LEVEL_START` was latched: one app press ran levelling to completion and
+the green LED stayed lit until `AUTO_LEVEL_STOP` arrived. It now matches the
+**physical** auto-level button — held to run, released to stop.
+
+- The app repeats `AUTO_LEVEL_START` every 100 ms while held, and it arms and
+  refreshes the same `MOVE_WATCHDOG_MS` (300 ms) dead-man watchdog a move
+  does.
+- A repeat must **not** re-enter `bed_auto_level_start()`. That resets
+  `first_check`, `leveling_success[]` and the current axis, so at 10 Hz
+  levelling would never progress. Guarded by `app_auto_level_active`, exactly
+  as `app_move_active` guards MOVE_START.
+- `AUTO_LEVEL_STOP` on release stops immediately and clears the auto-level
+  LEDs.
+- Watchdog expiry during auto-level is the same clean full stop plus
+  `WATCHDOG_STOP` as for a move.
+
+**Why the watchdog matters here.** A link *drop* during auto-level already
+stopped the bed correctly via the disconnect handler — bench-confirmed. A link
+that **stalls without disconnecting** was not covered, and hold-to-run is what
+makes that gap reachable: under the old latched behaviour the bed would finish
+levelling and stop by itself, whereas a held command that stops being repeated
+must be caught by something.
+
+Holding through completion behaves exactly as the physical button does:
+`app.c` clears `auto_level_active` and lights the green LED on completion but
+leaves `active_switch` at `SWITCH_AUTO_LEVEL_VALUE`, so the bed is not idle,
+repeats keep refreshing the watchdog, and release cleans up. No restart loop.
+
+### Two-source conflict is a latched inhibit
+
+`TWO_SOURCE_LOCKOUT_MS` (500 ms, from #35) is **removed entirely**. It was
+strictly weaker than what follows, and two mechanisms doing one job is worse
+than one.
+
+**Rule.** Either source touching the bed while the other is moving it stops
+movement immediately, and nothing moves again until **both** sources have
+released — at which point a fresh press on either one starts normally.
+
+The old timer expired while a button was still held, so whichever source was
+still holding simply won. That is stop-then-hand-over, exactly what
+DECISIONS #12 exists to prevent.
+
+**Where it lives.** `bed_control.c`, because that is the one place both
+sources already meet, so a single check covers them symmetrically. The
+motion-starting verbs refuse while latched; `bed_conflict_inhibited()` exposes
+it for the BLE layer's early refusal.
+
+**How release is detected.**
+
+| Source | Signal |
+|---|---|
+| Physical | the panel's release interrupt, already generated — reaches `bed_control` through `bed_move_stop()`/`bed_auto_level_stop()` |
+| App | `MOVE_STOP`/`AUTO_LEVEL_STOP` (immediate), **or** no motion repeat for `MOVE_WATCHDOG_MS` (fallback if a stop write is lost) |
+
+The dead-man period doing a second job is deliberate: it is already the
+definition of "the app has gone quiet", and reusing it avoids a second
+constant meaning almost the same thing.
+
+**Cessation is the only thing that clears the latch.** A refused command must
+never clear it — and, just as importantly, a refused repeat must *refresh* the
+app's half. Without that refresh the silence timeout would expire mid-hold,
+the latch would clear, and the next repeat would restart the bed: precisely
+the behaviour being removed. So an app that keeps repeating because the user
+is still holding keeps being refused indefinitely, each refusal returning
+`FORCE_STOPPED_OTHER_SOURCE` so the app can react.
+
+**Scope: motion-starting opcodes only.** `MOVE_START` and `AUTO_LEVEL_START`
+are refused. `STOP_ALL`, `MOVE_STOP` and `AUTO_LEVEL_STOP` are never
+inhibited. `LIGHTS_SET` and `REFRESH_TILT` are not motion and are not
+inhibited — lights also never *latch* the inhibit, though a lights command
+from the non-holding source still force-stops per #12's existing behaviour.
+
+### Which LEDs go out
+
+The conflict stop kills the **movement** indicators only — green, blue, red.
+It leaves the under-bed lighting and its amber indicator alone. The lights are
+a latched setting the user chose separately, and a movement conflict plunging
+the bed into darkness is a surprise rather than a feature. `STOP_ALL` remains
+the way to turn everything off.
+
+Implemented as `app_stop_movement()` in `bed_actions.c`: `app_stop_all()`
+followed by restoring the amber indicator if the lights are on. The under-bed
+lighting output was never touched by `app_stop_all()` — only its indicator —
+so restoring the indicator is all that is needed to keep the two agreeing.
+Every force-stop path in `bed_control.c` now uses it; `STOP_ALL` still calls
+`app_stop_all()` directly and keeps its full behaviour.
+
+### Verified
+
+The host unit test (`test/bed_control_test.c`) was extended with eleven checks
+covering the latch: that a conflict latches it, that **both** sources are
+refused while latched (not just the app), that auto-level start is inhibited
+too, that one source releasing is not enough, that it clears only when both
+have released, that a fresh press then works, and that stops and lights are
+never inhibited. All 30 checks pass on the host.
+
+That is real executed evidence for the arbitration logic. Everything above it
+— the LED behaviour, the auto-level hold-to-run feel, the watchdog on a
+stalled link — remains **ASSERTED** until the bench run.

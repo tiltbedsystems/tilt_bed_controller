@@ -63,4 +63,21 @@ void bed_control_tick(void);
 // For future telemetry / BLE control-holder UI.
 bed_source_t bed_active_source(void);
 
+/*
+ * Two-source conflict inhibit (DECISIONS.md #36).
+ *
+ * A conflict - either source touching the bed while the other is moving it -
+ * stops movement and latches. While latched, the motion-starting verbs above
+ * refuse (bed_move_start / bed_auto_level_start return false); the stop-class
+ * verbs and bed_lights_set are never inhibited. The latch clears only when
+ * BOTH sources have released - by cessation, never by a refused command.
+ */
+bool bed_conflict_inhibited(void);
+
+// Declares that a source has stopped asking for motion. The verbs above do
+// this themselves for press/release; this is for the app's dead-man fallback,
+// where a lost MOVE_STOP is covered by MOVE_WATCHDOG_MS of silence instead
+// (see ble_bed_service.c).
+void bed_note_source_released(bed_source_t src);
+
 #endif /* BED_CONTROL_H_ */

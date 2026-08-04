@@ -34,6 +34,11 @@ void app_lights_set(bool on);
 // OFF. Used when a non-active source's command is force-stopped.
 void app_stop_all(void);
 
+// Full stop of MOVEMENT only - motors, auto-level and the movement LEDs
+// (green/blue/red) - leaving the under-bed lighting and its amber indicator
+// untouched. Used for two-source conflicts (DECISIONS.md #36).
+void app_stop_movement(void);
+
 // Output application for APP-sourced commands (BLE Stage C). The switch path
 // gets its outputs from switch_input.c's process_outputs(), driven by a real
 // switch edge; an app command has no edge, so ble_bed_service.c calls these

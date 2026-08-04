@@ -307,6 +307,25 @@ void app_release_active_switch(void)
   active_switch = OFF;
 }
 
+// Full stop of MOVEMENT only, leaving the under-bed lighting and its amber
+// indicator alone (DECISIONS.md #36).
+//
+// This is what a two-source conflict uses. app_stop_all() clears every panel
+// LED including amber, which for a conflict is wrong: the under-bed lights
+// are a latched setting the user chose separately, and a movement conflict
+// plunging the bed into darkness is a surprise, not a feature. The lighting
+// output itself was never touched by app_stop_all() - only its indicator -
+// so restoring the indicator is all that is needed to keep the two agreeing.
+//
+// STOP_ALL still calls app_stop_all() directly and keeps its full behaviour.
+void app_stop_movement(void)
+{
+  app_stop_all();
+  if (bedlights_on) {
+    set_LED_on(LED_AMBER);
+  }
+}
+
 bool app_bed_is_idle(void)
 {
   return (active_switch == OFF) && (!in_settings_mode);

@@ -96,7 +96,7 @@ offset 3  seq      u8   rolling per-connection sequence number
 |---|---|---|---|---|
 | 0x01 | MOVE_START | target: 0 HEAD, 1 LEFT, 2 RIGHT, 3 FOOT, 4 ALL | dir: 0 DOWN, 1 UP | `bed_move_start(BED_SOURCE_APP, …)`. **Repeated every 100 ms while held** — a repeat with identical target/dir refreshes the dead-man watchdog (§5). A repeat with *different* target/dir is treated as MOVE_STOP then MOVE_START. |
 | 0x02 | MOVE_STOP | — | — | `bed_move_stop(BED_SOURCE_APP)`. Sent on button release. |
-| 0x03 | AUTO_LEVEL_START | — | — | `bed_auto_level_start(BED_SOURCE_APP)`. **Latched** (#12) — no keepalive; runs to completion or stop. |
+| 0x03 | AUTO_LEVEL_START | — | — | `bed_auto_level_start(BED_SOURCE_APP)`. **Hold-to-run** (DECISIONS #36), matching the physical auto-level button: **repeated every 100 ms while held**, and it arms and refreshes the same 300 ms dead-man watchdog a MOVE_START does. A repeat must not re-enter the verb — that would reset the levelling state machine. Release sends AUTO_LEVEL_STOP, which stops immediately. |
 | 0x04 | AUTO_LEVEL_STOP | — | — | `bed_auto_level_stop(BED_SOURCE_APP)`. |
 | 0x05 | LIGHTS_SET | 0 off / 1 on | — | `bed_lights_set(BED_SOURCE_APP, …)`. Latched. |
 | 0x06 | STOP_ALL | — | — | Explicit full stop (maps to the `app_stop_all()` path: motors + auto-level + LEDs). The app's big red button. Always accepted from **any** role, control or viewer — this is the BLE embodiment of the stop-from-anyone rule (#12). |
@@ -126,7 +126,32 @@ Notes:
   *before* reaching `bed_control` — the viewer phone is not a third source,
   it is a non-command-capable window into the single APP source (#14).
 
-  Two deliberate exceptions, for opposite reasons:
+  **A conflict latches (DECISIONS #36).** Either source touching the bed
+  while the other is moving it stops movement immediately and stays stopped
+  until **both** sources have released; a fresh press on either one then
+  starts normally. This replaced a 500 ms timed lockout, which expired while
+  a button was still held and let whichever source was still holding win —
+  stop-then-hand-over, which is what #12 exists to prevent. The latch clears
+  by cessation only: a refused command never clears it, so an app repeating
+  MOVE_START because the user is still holding keeps being refused, each
+  refusal returning `FORCE_STOPPED_OTHER_SOURCE`.
+
+  Release is detected per source: the physical panel's release interrupt, and
+  for the app either an explicit MOVE_STOP/AUTO_LEVEL_STOP or 300 ms with no
+  motion repeat (the dead-man period doing double duty, covering a lost stop
+  write).
+
+  The inhibit covers the **motion-starting** opcodes only — MOVE_START and
+  AUTO_LEVEL_START. STOP_ALL, MOVE_STOP and AUTO_LEVEL_STOP are never
+  inhibited; LIGHTS_SET and REFRESH_TILT are not motion and are not inhibited.
+
+  The conflict stop kills the **movement** indicators only (green/blue/red).
+  It leaves the under-bed lighting and its amber indicator alone: the lights
+  are a latched setting chosen separately, and a movement conflict plunging
+  the bed into darkness would be a surprise rather than a feature. STOP_ALL
+  still turns everything off.
+
+  Two deliberate exceptions to viewer rejection, for opposite reasons:
 
   - **STOP_ALL** — accepted from any role because stopping must be available
     to anyone (#12).
@@ -155,14 +180,20 @@ Notes:
 Lives in the BLE glue module (`ble_bed_service.c`), **above** `bed_control`
 and below the radio:
 
-- On MOVE_START from the control connection: start/refresh a **300 ms**
-  sleeptimer (ms-defined, per DECISIONS #2).
-- Each identical repeated MOVE_START refreshes it.
+- On MOVE_START **or AUTO_LEVEL_START** from the control connection:
+  start/refresh a **300 ms** sleeptimer (ms-defined, per DECISIONS #2).
+- Each identical repeat refreshes it.
 - Expiry → clean full stop via the `app_stop_all()` path, and a
   Command Result `WATCHDOG_STOP` notification if the link is still up.
-- MOVE_STOP, STOP_ALL, collision, or limit stop cancels the watchdog.
-- AUTO_LEVEL and LIGHTS never arm it (latched commands; auto-level is
-  already supervised below the API per #13).
+- MOVE_STOP, AUTO_LEVEL_STOP, STOP_ALL or a collision cancels the watchdog.
+  A limit stop does **not**: the watchdog guards the *link*, not the bed, so
+  it stays armed and is simply re-armed by the next repeat (DECISIONS #35).
+- **AUTO_LEVEL now arms it too.** It used to be exempt as a latched command;
+  since DECISIONS #36 made auto-level hold-to-run, matching the physical
+  button, it carries the same dead-man cover as a move. LIGHTS is still
+  exempt — it is latched and moves nothing.
+- The same 300 ms period doubles as the app's "has released" signal for the
+  two-source inhibit (#4, DECISIONS #36), covering a lost stop write.
 - **Control-connection disconnect while APP is the active source → clean
   full stop, auto-level included.** `bed_move_stop()` alone is
   insufficient (it doesn't kill auto-level); use the stop-all path.

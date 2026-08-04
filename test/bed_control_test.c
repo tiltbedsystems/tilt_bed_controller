@@ -36,6 +36,7 @@ static int auto_level_start_calls;
 static int auto_level_stop_calls;
 static int lights_set_calls;
 static int stop_all_calls;
+static int stop_movement_calls; // force-stops go through app_stop_movement() (#36)
 static bool stub_idle;
 
 static void reset_stub(bool idle)
@@ -46,7 +47,14 @@ static void reset_stub(bool idle)
   auto_level_stop_calls = 0;
   lights_set_calls = 0;
   stop_all_calls = 0;
+  stop_movement_calls = 0;
   stub_idle = idle;
+
+  // Clear any latched two-source inhibit (#36) left by the previous scenario,
+  // using the real mechanism: both sources releasing. bed_control's inhibit
+  // is file-static and deliberately has no test back door.
+  bed_note_source_released(BED_SOURCE_SWITCHES);
+  bed_note_source_released(BED_SOURCE_APP);
 }
 
 void app_move_start(bed_target_t target, bed_direction_t dir)
@@ -87,6 +95,12 @@ void app_stop_all(void)
   stub_idle = true;
 }
 
+void app_stop_movement(void)
+{
+  stop_movement_calls++;
+  stub_idle = true;
+}
+
 bool app_bed_is_idle(void)
 {
   return stub_idle;
@@ -118,7 +132,7 @@ int main(void)
         "scenario 1a-ret: bed_move_start returns true when it performs the normal action");
 
   ok = bed_move_start(BED_SOURCE_SWITCHES, BED_TARGET_HEAD, BED_DIR_UP);
-  CHECK(stop_all_calls == 1 && move_start_calls == 1,
+  CHECK(stop_movement_calls == 1 && move_start_calls == 1,
         "scenario 1b: switch move while APP holds the lock forces a stop, not a switch move");
   CHECK(ok == false,
         "scenario 1b-ret: bed_move_start returns false when force-stopped instead of performing the move");
@@ -137,7 +151,7 @@ int main(void)
         "scenario 2a-ret: bed_move_start returns true when it performs the normal action");
 
   ok = bed_auto_level_start(BED_SOURCE_APP);
-  CHECK(stop_all_calls == 1 && auto_level_start_calls == 0,
+  CHECK(stop_movement_calls == 1 && auto_level_start_calls == 0,
         "scenario 2b: app auto-level while SWITCHES holds the lock forces a stop, not an app auto-level start");
   CHECK(ok == false,
         "scenario 2b-ret: bed_auto_level_start returns false when force-stopped instead of starting");
@@ -147,7 +161,7 @@ int main(void)
   reset_stub(true);
   bed_move_start(BED_SOURCE_SWITCHES, BED_TARGET_ALL, BED_DIR_DOWN);
   ok = bed_lights_set(BED_SOURCE_APP, true);
-  CHECK(stop_all_calls == 1 && lights_set_calls == 0,
+  CHECK(stop_movement_calls == 1 && lights_set_calls == 0,
         "scenario 2c: app lights-set while SWITCHES holds the lock forces a stop, not a lights change");
   CHECK(ok == false,
         "scenario 2c-ret: bed_lights_set returns false when force-stopped instead of setting lights");
@@ -162,7 +176,7 @@ int main(void)
   stub_idle = false;
 
   ok = bed_move_stop(BED_SOURCE_APP); // non-active source requests a stop
-  CHECK(stop_all_calls == 1,
+  CHECK(stop_movement_calls == 1,
         "scenario 3a: non-active-source stop request still results in a full stop (never refused)");
   CHECK(ok == true,
         "scenario 3a-ret: bed_move_stop returns true even when the stop was a forced full stop");
@@ -173,7 +187,7 @@ int main(void)
   stub_idle = false;
 
   ok = bed_move_stop(BED_SOURCE_SWITCHES); // active source's own stop
-  CHECK(move_stop_calls == 1 && stop_all_calls == 0,
+  CHECK(move_stop_calls == 1 && stop_movement_calls == 0,
         "scenario 3b: active source's own stop calls its natural stop action, not a forced stop");
   CHECK(ok == true,
         "scenario 3b-ret: bed_move_stop returns true for its own normal stop");
@@ -185,7 +199,7 @@ int main(void)
   stub_idle = false;
 
   ok = bed_auto_level_stop(BED_SOURCE_APP); // non-active source requests a stop
-  CHECK(stop_all_calls == 1 && ok == true,
+  CHECK(stop_movement_calls == 1 && ok == true,
         "scenario 3c: non-active-source auto-level stop forces a full stop and still returns true");
 
   // Scenario 4: re-acquire after idle - the lock releases once the bed goes
@@ -200,6 +214,63 @@ int main(void)
         "scenario 4b: next source's start acquires the lock after release");
   CHECK(ok == true,
         "scenario 4b-ret: bed_move_start returns true acquiring the lock after release");
+
+  // Scenario 5: the two-source conflict LATCH (DECISIONS.md #36). After a
+  // conflict, neither source may start until BOTH have released. This is the
+  // rule that replaced the old 500 ms timed lockout, which expired while a
+  // button was still held and let the surviving source win.
+  reset_stub(true);
+  bed_move_start(BED_SOURCE_APP, BED_TARGET_HEAD, BED_DIR_UP); // APP holds
+  ok = bed_move_start(BED_SOURCE_SWITCHES, BED_TARGET_HEAD, BED_DIR_UP);
+  CHECK(ok == false && bed_conflict_inhibited(),
+        "scenario 5a: a conflict latches the inhibit");
+
+  move_start_calls = 0;
+  ok = bed_move_start(BED_SOURCE_APP, BED_TARGET_HEAD, BED_DIR_UP);
+  CHECK(ok == false && move_start_calls == 0,
+        "scenario 5b: app repeat while inhibited is refused and starts nothing");
+
+  ok = bed_move_start(BED_SOURCE_SWITCHES, BED_TARGET_HEAD, BED_DIR_UP);
+  CHECK(ok == false && move_start_calls == 0,
+        "scenario 5c: switch press while inhibited is refused too - both sources, not just the app");
+
+  ok = bed_auto_level_start(BED_SOURCE_APP);
+  CHECK(ok == false && auto_level_start_calls == 0,
+        "scenario 5d: auto-level start is inhibited as well - it is motion");
+
+  // A refused repeat must NOT clear the latch: only cessation does.
+  bed_note_source_released(BED_SOURCE_SWITCHES); // physical button released
+  CHECK(bed_conflict_inhibited(),
+        "scenario 5e: latch survives one source releasing while the other still commands");
+
+  ok = bed_move_start(BED_SOURCE_APP, BED_TARGET_HEAD, BED_DIR_UP);
+  CHECK(ok == false && move_start_calls == 0,
+        "scenario 5f: app still refused while it alone is still holding");
+
+  bed_note_source_released(BED_SOURCE_APP); // app released too
+  CHECK(!bed_conflict_inhibited(),
+        "scenario 5g: latch clears once BOTH sources have released");
+
+  ok = bed_move_start(BED_SOURCE_APP, BED_TARGET_HEAD, BED_DIR_UP);
+  CHECK(ok == true && move_start_calls == 1,
+        "scenario 5h: a fresh press after both released starts normally");
+
+  // Scenario 6: stops are never inhibited (#36 scope).
+  reset_stub(true);
+  bed_move_start(BED_SOURCE_APP, BED_TARGET_HEAD, BED_DIR_UP);
+  bed_move_start(BED_SOURCE_SWITCHES, BED_TARGET_HEAD, BED_DIR_UP); // conflict -> latched
+  CHECK(bed_conflict_inhibited(), "scenario 6a: inhibited");
+
+  ok = bed_move_stop(BED_SOURCE_APP);
+  CHECK(ok == true, "scenario 6b: bed_move_stop still works while inhibited");
+
+  reset_stub(true);
+  bed_move_start(BED_SOURCE_APP, BED_TARGET_HEAD, BED_DIR_UP);
+  bed_move_start(BED_SOURCE_SWITCHES, BED_TARGET_HEAD, BED_DIR_UP);
+  lights_set_calls = 0;
+  ok = bed_lights_set(BED_SOURCE_APP, true);
+  CHECK(lights_set_calls == 1,
+        "scenario 6c: lights are not motion and are not inhibited");
 
   printf("\n%d check(s) failed\n", failures);
   return failures == 0 ? 0 : 1;
