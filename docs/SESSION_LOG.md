@@ -741,3 +741,78 @@ property. Full reasoning in the handoff §b.5.
   outward, app moves lose collision protection silently.
 - **...that the lockout latches.** It expires after 500 ms and a held app
   button will then restart the bed.
+  *(Superseded 2026-08-02 by #36 — the timed lockout is gone and the
+  replacement does latch. See the next entry.)*
+
+---
+
+## 2026-08-02 (seventh) — Auto-level hold-to-run; conflict latch replaces the timed lockout
+
+**Commits**
+
+- `5351aef` — Auto-level hold-to-run; two-source conflict becomes a latched
+  inhibit. Plus the handoff commit after this entry.
+
+The #35 stutter fix is bench-confirmed and was not touched — the double-press
+gate is unchanged and `run_motor_supervision()` is still outside it.
+
+**VERIFIED — executed, not merely compiled**
+
+- **The host unit test was extended and all 30 checks pass** (`-Wall`, zero
+  warnings). Eleven are new and cover the latch: a conflict latches it;
+  **both** sources are refused while latched, not just the app (scenario 5c —
+  this is the one that justified putting the latch in `bed_control.c` rather
+  than the BLE layer); auto-level start is inhibited too; one source
+  releasing is not enough; it clears only when both release; a fresh press
+  then works; stops and lights are never inhibited.
+- Every pre-existing arbitration check (scenarios 1–4) still passes.
+- Firmware builds clean.
+- `TWO_SOURCE_LOCKOUT_MS` is fully removed, not left dormant (grep returns
+  nothing).
+- **Hold-to-run auto-level cannot loop on completion.** Checked rather than
+  assumed: `app.c:630-636` clears `auto_level_active` and lights green but
+  leaves `active_switch` at `SWITCH_AUTO_LEVEL_VALUE`, so the bed is not idle,
+  the watchdog's idle branch does not fire, and repeats simply refresh it.
+
+**ASSERTED**
+
+- Hold-to-run feel, prompt stop on release, and the LED behaviour during a
+  conflict. Never run.
+- **The watchdog's unique coverage is not really testable at the bench.**
+  Switching Bluetooth off produces a clean *disconnect*, which the disconnect
+  handler already covered. The case the watchdog uniquely adds is a link that
+  **stalls without disconnecting**, which is hard to produce deliberately.
+  Acceptance step (c) proves the watchdog is wired in and does not misfire —
+  not the stall case itself.
+- That the physical→app direction behaves on hardware. The host test proves
+  the arbitration; interrupt timing and the `process_outputs()` interaction
+  are not modelled.
+
+**Open**
+
+- Acceptance steps a–l in `fw_HANDOFF_2026-08-02_07`. Steps (e) and (h) are
+  the two that would most likely expose a mistake: (e) is the case the old
+  timed lockout got wrong, and (h) is the LED decision.
+- Four review questions, chiefly that **`STOP_ALL` does not actually turn the
+  under-bed lighting off** — it clears the amber LED but never calls
+  `set_underbed_lighting_off()`. That predates this change and was left alone,
+  but it means "STOP_ALL turns everything off" is not currently true.
+- Manual-move loop-rate measurement still owed (three sessions now).
+- Release-config pass still owed before Stage C ships.
+
+**The next session must NOT assume**
+
+- **...that a refused command may be ignored.** A refused MOVE_START must
+  still refresh the app's half of the latch. Without it the 300 ms silence
+  timeout expires mid-hold, the latch clears, and the next repeat restarts the
+  bed — the exact behaviour #36 removes. Host scenario 5f guards this.
+- **...that the inhibit only applies to the app.** A physical press while
+  latched is refused too. That is why it lives in `bed_control.c`.
+- **...that auto-level is latched.** It is hold-to-run and watchdogged as of
+  #36; anything in older text saying AUTO_LEVEL never arms the watchdog is
+  superseded.
+- **...that a repeat may call `bed_auto_level_start()`.** It resets the
+  levelling state machine; at 10 Hz levelling would never progress.
+- **...that a limit stop pauses anything now.** #35's idle branch armed the
+  500 ms lockout; it no longer does, so a held app button restarts the move
+  after a limit stop. Raised as review question 3.
