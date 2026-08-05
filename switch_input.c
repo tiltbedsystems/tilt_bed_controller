@@ -1,4 +1,4 @@
-/*
+﻿/*
  * switch_input.c
  *
  * Relocated from app.c on C4 commit 4 (Jul 2026) - see switch_input.h. Pure
@@ -54,6 +54,47 @@
 // AUTO_LEVEL, DOWN_ALL and BED_LIGHTS. Bits 4-7 of Port 1 are the LED enable
 // OUTPUTS and are deliberately excluded - see the fail-safe below.
 #define SWITCH_INPUT_MASK 0xFF0F
+
+/*
+ * BENCH-ONLY RUNAWAY PROVOCATION - MUST NEVER BE 1 IN A NORMAL BUILD.
+ *
+ * Same convention as BLE_BENCH_WIPE_BONDS in ble_bed_service.c: a hardcoded,
+ * source-visible flag that has to be hand-flipped for a bench session and
+ * hand-flipped back afterwards. Default 0.
+ *
+ * When 1, tapping and RELEASING a physical button deliberately energises a
+ * motor pair ~300 ms later, with no button held and no source commanding -
+ * i.e. it manufactures exactly the runaway the motion fail-safe exists to
+ * catch, so the fail-safe can be tested in the only direction that matters.
+ * Until this has been run, "the fail-safe would catch a runaway" is an
+ * assumption with no evidence behind it.
+ *
+ *   tap UP HEAD  -> provokes the HEAD pair   (set_dual_motors_on)
+ *   tap UP ALL   -> provokes all four motors (set_all_motors_on)
+ *
+ * Two different calls on purpose: the single-side and all-motor paths energise
+ * differently, so both need proving.
+ *
+ * It energises through the SAME calls the real paths use, so the fail-safe is
+ * tested against a genuinely energised bed rather than a simulation of one.
+ *
+ * MUST be defined here, above process_inputs() - the trigger sites are in it.
+ * Defining it further down (next to the fail-safe, where it reads more
+ * naturally) silently compiles the trigger sites out, and the provocation
+ * does nothing at all. That happened; -Wunused-function caught it.
+ *
+ * WHY IT MUST NEVER SHIP: a production unit with this enabled would drive a
+ * motor pair with nothing held, every time a button was tapped, relying on the
+ * fail-safe as its only stop. That is a bed that moves on its own - the exact
+ * behaviour this whole subsystem exists to prevent.
+ */
+#define BED_BENCH_PROVOKE_RUNAWAY 0
+
+// How long after the button release to energise. Long enough that the release
+// has been fully processed and every variable is back to idle, so the
+// fail-safe faces a real "nothing is commanding" state rather than a race with
+// the release path. Milliseconds via sleeptimer (DECISIONS #2).
+#define PROVOKE_DELAY_MS 300
 
 // Flags
 static bool read_ui_data = false; // Interrupt flag to read the UI status
@@ -193,6 +234,49 @@ static bed_target_t side_to_target(side_of_bed_t side)
   return BED_TARGET_HEAD; // unreachable - side_of_bed_t has exactly these 4 values
 }
 
+#if BED_BENCH_PROVOKE_RUNAWAY
+static bool     provoke_armed = false;
+static bool     provoke_all = false;
+static uint32_t provoke_at_tick = 0;
+static uint32_t provoke_energised_tick = 0;
+static bool     provoke_running = false;
+
+// Called from process_inputs() on the release of the trigger buttons.
+static void provoke_arm(bool all)
+{
+  provoke_armed = true;
+  provoke_all = all;
+  provoke_at_tick = sl_sleeptimer_get_tick_count()
+                    + sl_sleeptimer_ms_to_tick(PROVOKE_DELAY_MS);
+}
+
+// Called once per tick, BEFORE motion_failsafe_tick(), so the fail-safe sees
+// the energised state on one of its own sample points rather than in the same
+// statement.
+static void provoke_tick(void)
+{
+  if (!provoke_armed) {
+    return;
+  }
+  if ((int32_t)(sl_sleeptimer_get_tick_count() - provoke_at_tick) < 0) {
+    return;
+  }
+  provoke_armed = false;
+
+  // The same calls the real paths use - not a simulation.
+  if (provoke_all) {
+    set_all_motors_on();
+  } else {
+    set_dual_motors_on(HEAD);
+  }
+
+  provoke_energised_tick = sl_sleeptimer_get_tick_count();
+  provoke_running = true;
+  printf("PROVOKE: energised %s with nothing commanding - fail-safe should stop this\r\n",
+         provoke_all ? "ALL MOTORS" : "HEAD pair");
+}
+#endif // BED_BENCH_PROVOKE_RUNAWAY
+
 // Executes changes in motor states to turn various power outputs ON/OFF
 static void process_outputs()
 {
@@ -317,6 +401,9 @@ static void process_inputs()
             } else if ((!switch_pressed) && (switch_held == SWITCH_UP_ALL_VALUE)){
                 switch_held = OFF;
                 bed_move_stop(BED_SOURCE_SWITCHES);
+#if BED_BENCH_PROVOKE_RUNAWAY
+                provoke_arm(true); // bench only - all four motors
+#endif
             }
             break;
 
@@ -374,6 +461,11 @@ static void process_inputs()
                     } else if ((!switch_pressed) && (switch_held == motor_switch_table[t].value)) {
                         switch_held = OFF;
                         bed_move_stop(BED_SOURCE_SWITCHES);
+#if BED_BENCH_PROVOKE_RUNAWAY
+                        if (motor_switch_table[t].value == SWITCH_UP_HEAD_VALUE) {
+                            provoke_arm(false); // bench only - HEAD pair
+                        }
+#endif
                     }
                     break;
                 }
@@ -446,6 +538,10 @@ static bool any_motor_energised_now(void)
 
 void motion_failsafe_tick(void)
 {
+#if BED_BENCH_PROVOKE_RUNAWAY
+  provoke_tick(); // bench only - manufactures the runaway this must catch
+#endif
+
   uint32_t now = sl_sleeptimer_get_tick_count();
   if (sl_sleeptimer_tick_to_ms(now - failsafe_last_sample_tick) < FAILSAFE_SAMPLE_MS) {
     return;
@@ -497,10 +593,39 @@ void motion_failsafe_tick(void)
   clear_switch_panel_state();
   active_switch = OFF;
 
+  // Leave NO desynced bookkeeping behind. A fail-safe that stops the motors
+  // and strands the state has converted a runaway into the stuck state this
+  // project has already hit twice (#38 additions).
+  //
+  //  - The switches' half of the #36 latch: this function has just
+  //    established by direct read that no switch is down, so the panel is
+  //    definitively not commanding. Without this the latch could stay set
+  //    forever, because clearing switch_held above means a later release
+  //    event finds no match and never reaches bed_move_stop().
+  //  - Inferred limits: every other stop path clears these (#37). A runaway
+  //    is precisely the case where motors ran unsupervised, so any inference
+  //    made during it is worthless.
+  //
+  // app_move_active / app_auto_level_active need no clearing - the fail-safe
+  // only runs when ble_bed_service_app_motion_active() is already false.
+  // bed_control's active_source self-releases on the next bed_control_tick()
+  // now that app_bed_is_idle() is true.
+  bed_note_source_released(BED_SOURCE_SWITCHES);
+  reset_limit_switch_flags();
+
   if (!failsafe_tripped) {
     failsafe_tripped = true;
 #if !BED_CAPTURE_MOTOR_CURRENTS
     printf("FAILSAFE: motors energised with nothing commanding - stopped\r\n");
+#endif
+#if BED_BENCH_PROVOKE_RUNAWAY
+    // Measured, not assumed: energise -> de-energise, in milliseconds.
+    if (provoke_running) {
+      provoke_running = false;
+      uint32_t elapsed_ms = sl_sleeptimer_tick_to_ms(
+                              sl_sleeptimer_get_tick_count() - provoke_energised_tick);
+      printf("PROVOKE: fail-safe caught it after %lu ms\r\n", (unsigned long)elapsed_ms);
+    }
 #endif
   }
 }

@@ -1567,3 +1567,82 @@ because it also encloses the double-press check whose #35 fix is
 bench-confirmed, and untangling the two is its own change. The fail-safe above
 is a backstop for the consequence, not a fix for the shape. **Recorded as the
 next thing to fix in this area.**
+
+## 39. Proving the motion fail-safe: a bench-only runaway provocation
+
+#38 added the motion fail-safe and recorded that it was **untested in the
+direction that matters** - only ever shown to stay quiet, never shown to catch
+a runaway. That is the one property it exists for, and it had zero evidence.
+
+### The provocation
+
+`BED_BENCH_PROVOKE_RUNAWAY`, default 0, same convention as
+`BLE_BENCH_WIPE_BONDS` (#28's bench flag): hardcoded, source-visible, must be
+hand-flipped and hand-flipped back.
+
+When 1, releasing a trigger button arms a timer that energises a motor pair
+~300 ms later, with no button held and no source commanding - a manufactured
+runaway. Tap **UP HEAD** for the single-side path (`set_dual_motors_on`), tap
+**UP ALL** for all four (`set_all_motors_on`). Two paths because they energise
+through different calls and both need proving.
+
+It energises through the **same calls the real paths use**, so the fail-safe
+faces a genuinely energised bed rather than a simulation.
+
+The 300 ms delay is deliberate: long enough that the release is fully
+processed and every variable is back to idle, so the fail-safe meets a real
+"nothing is commanding" state rather than racing the release path.
+
+Timing is **measured, not assumed** - the provocation stamps the energise tick
+and the fail-safe prints elapsed milliseconds on the trip, both under the same
+flag.
+
+### A placement bug the compiler caught
+
+The flag was first defined next to the fail-safe, near the end of the file,
+where it reads most naturally. The trigger sites are in `process_inputs()`,
+**earlier in the file**, so `#if BED_BENCH_PROVOKE_RUNAWAY` there evaluated an
+undefined macro to 0 and compiled them out. **The provocation would have done
+nothing at all**, and a bench session would have been spent concluding the
+fail-safe works when it had never been provoked.
+
+`-Wunused-function` on `provoke_arm` is what exposed it. The flag now sits at
+the top of the file with a comment saying why it must, and both flag states
+build warning-free.
+
+Worth generalising: a bench flag whose only job is to change behaviour is
+exactly the kind of thing that can silently not work, and the failure looks
+identical to success.
+
+### What the fail-safe leaves behind - reviewed, and two gaps closed
+
+Asked directly: if it fires, is the system clean, or has a runaway just become
+the stuck state?
+
+Already correct:
+
+- Hardware outputs, `motor_state[].motor_on`, movement LEDs, `switch_held`,
+  `switch_driving`, `active_switch` - all cleared.
+- `app_move_active` / `app_auto_level_active` need no clearing: the fail-safe
+  only runs when `ble_bed_service_app_motion_active()` is already false.
+- `bed_control`'s `active_source` self-releases on the next
+  `bed_control_tick()`, since `app_bed_is_idle()` is now true.
+
+Two gaps, both closed:
+
+- **The switches' half of the #36 latch.** The fail-safe clears `switch_held`,
+  so a later release event finds no match and never reaches `bed_move_stop()`
+  - leaving `source_commanding[SWITCHES]` set and the inhibit latched
+  permanently. It now calls `bed_note_source_released(BED_SOURCE_SWITCHES)`,
+  which is justified rather than defensive: it has just established by direct
+  hardware read that no switch is down.
+- **Inferred limit flags.** Every other stop path clears these (#37); the
+  fail-safe did not. A runaway is precisely the case where motors ran
+  unsupervised, so any inference made during one is worthless. Now calls
+  `reset_limit_switch_flags()`.
+
+### Status
+
+Both flag states build clean. **The fail-safe is still unproven** - the
+provocation exists but has not been run. That is the whole point of the next
+bench session.
