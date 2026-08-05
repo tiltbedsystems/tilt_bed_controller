@@ -34,4 +34,11 @@ void app_reset_double_press_timer(void);
 // inline blocks it replaces.
 void switch_input_tick(void);
 
+// Unconditional motion fail-safe (DECISIONS.md #38). Call once per
+// app_process_action(). De-energises the motors whenever a direct hardware
+// read says no switch is down, the app is not commanding motion, auto-level
+// is not running and settings mode is inactive - regardless of what
+// active_switch, switch_held, switch_driving or any table match believe.
+void motion_failsafe_tick(void);
+
 #endif /* SWITCH_INPUT_H_ */

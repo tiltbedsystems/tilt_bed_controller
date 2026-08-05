@@ -52,4 +52,9 @@ void ble_bed_service_tick(void);
 // switch-only bed with no phone is unchanged (DECISIONS.md #33).
 bool ble_bed_service_status_subscribed(void);
 
+// True while the app believes it is holding a move or an auto-level. Used by
+// the motion fail-safe in switch_input.c (DECISIONS.md #38) to tell "the app
+// is commanding motion" from "nobody is, and the motors should be off".
+bool ble_bed_service_app_motion_active(void);
+
 #endif /* BLE_BED_SERVICE_H_ */

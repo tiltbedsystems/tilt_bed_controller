@@ -1437,3 +1437,133 @@ the three movement LEDs individually and never touches amber.
 `set_all_LED_off()`. The blip can therefore still occur on that one path.
 Recorded rather than fixed, because fixing it means changing a function the
 physical auto-level path also uses.
+
+## 38. The double-press misfire, the state it desynced, and the motion fail-safe
+
+Post-split bench findings. Both reported symptoms occurred **only when
+"Double Press Error" printed**, and everything below is downstream of that
+check firing when it should not.
+
+### The misfire — and it was introduced by #35
+
+The check compares `app_ui_status`, latched at the last physical interrupt,
+against a fresh read **50 ms later**, and calls a match a double press. It is
+only sound at that 50 ms point: what makes a legitimate single press differ
+from its own latched status is the **LED bits changing in between** (#35). Run
+it at any other moment and it compares a steady state against an edge, and
+matches whenever the LED happens to line up.
+
+`double_press_error_timer_timeout` is set by a **periodic** 50 ms timer. #35
+wrote the consume as:
+
+```c
+if (double_press_error_timer_timeout && switch_sourced_move){
+    double_press_error_timer_timeout = false;
+```
+
+The clear is inside a condition that also requires the source to be SWITCHES.
+So whenever it was not, **the flag was never consumed and went stale**, to be
+picked up at an arbitrary later moment — exactly the decoupling the check
+cannot survive. `app_reset_double_press_timer()` compounded it by stopping the
+timer without discarding a pending expiry.
+
+That gate was mine, added to fix the stutter, and putting it in the clearing
+condition rather than around the check body is the defect. **The gate itself
+stays** — it is bench-confirmed and is not what misfired.
+
+Fixed: consume the flag unconditionally, gate only the check body; and clear
+the flag when the timer is stopped.
+
+### The handler cleared one third of the split state
+
+```c
+set_dual_motors_off(HEAD);
+set_dual_motors_off(FOOT);
+active_switch = OFF;
+```
+
+Correct before #37, when `active_switch` **was** all three. After the split it
+left `switch_held` and `switch_driving` stale. Every other site in
+`process_outputs()` clears its state on adjacent lines; this handler was the
+exception.
+
+**Observation 1 — confirmed.** `switch_input_tick()`'s block is gated on
+`active_switch != OFF` and `run_motor_supervision()` is inside it. The handler
+sets `active_switch = OFF`, so supervision stops, the current filter is never
+fed, and the app faithfully reports 0 mA on all four while the motors run.
+**This is exactly the state #37 §b.1 fact 2 described** — motors energised with
+no collision detection, no limit inference and no path that will ever stop
+them — and the bench has now been looking directly at it.
+
+**Write this down permanently: the app's current display is a live diagnostic
+for that state.** Motors visibly running with 0 mA on all four means
+supervision is not running. It is the cheapest possible indicator of the most
+dangerous state this system has.
+
+**Observation 2 — it is BOTH mechanisms, and (b) is the serious one.**
+
+- Stale `switch_held` still named LEFT DOWN, so every other button failed its
+  `switch_held == OFF` press test and did nothing. That is why auto-level and
+  lights went dead too.
+- Stale `switch_driving` still named LEFT DOWN, and `process_outputs()`
+  energises purely on `switch_driving == value`. So pressing LEFT DOWN again
+  **moved the bed**.
+
+The observation proves (b) by itself: with `switch_held` stale, `bed_move_start()`
+was never called for **any** button, LEFT DOWN included. Yet LEFT DOWN moved
+the bed. The only remaining energise path is `process_outputs()`' press arm on
+`switch_driving`.
+
+**That is motion after `bed_control` was never consulted — arbitration
+bypassed entirely.** It is a worse defect than the symptom that revealed it,
+and it gets its own fix rather than being folded into the handler cleanup:
+`switch_driving` is now cleared at the start of **every** press event and
+re-set only when the verb returns true, so a stale value cannot survive into
+the press arm.
+
+The app kept working throughout because the app path uses its own state and
+consults neither variable.
+
+### The motion fail-safe
+
+Unconditional, every main-loop pass, trusting **no** bookkeeping:
+
+> If a direct hardware read says no switch is physically down, the app is not
+> commanding motion, auto-level is not running and settings mode is inactive —
+> and a motor is energised — de-energise it.
+
+- Not conditional on `active_switch`, `switch_held`, `switch_driving`,
+  `app_ui_interrupt` or any table match. Those are precisely what desync; the
+  fail-safe exists because they can.
+- The direct read is **rate-limited to 50 ms** (`sample_motor_faults_tick()`
+  precedent). A per-pass blocking I2C read on the UI expander is #27/#30's
+  radio-starvation mechanism, so it is not an option.
+- **The press-to-outputs window** is handled by requiring three consecutive
+  quiet samples (~150 ms). In that window the switch is physically **down**, so
+  the first test already fails — the confirm count only guards a torn read at
+  the instant of release. It cannot introduce a stutter, because it never
+  fires while any switch is down.
+- Auto-level and settings mode legitimately drive motors with no button held
+  and are excluded explicitly.
+- Prints once per trip, not per pass.
+- LED bits are masked out of the switch read (`SWITCH_INPUT_MASK`), so it
+  cannot inherit the LED dependency that made the double-press check fragile.
+
+### The de-energise asymmetry — closed
+
+`app_move_stop()` now calls `set_all_motors_off()`. The release helpers only
+ever cleared `motor_state[]` flags, so the physical path's **only** hardware
+de-energise was `process_outputs()`' release arm; any stop that did not reach
+that arm left the outputs live while every flag said stopped. A stop verb must
+stop the motors. Idempotent — `process_outputs()` may call it again in the
+same tick.
+
+### Should supervision be gated on `active_switch` at all?
+
+**No, and this is left open.** A gate that switches off collision detection is
+the wrong shape for a safety check, and this one can be cleared by an error
+handler — which is precisely what happened. The gate is not changed here
+because it also encloses the double-press check whose #35 fix is
+bench-confirmed, and untangling the two is its own change. The fail-safe above
+is a backstop for the consequence, not a fix for the shape. **Recorded as the
+next thing to fix in this area.**

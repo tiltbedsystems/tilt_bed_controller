@@ -700,6 +700,11 @@ void app_process_action(void)
     sl_atomic_store(heartbeat, local_heartbeat);
   }
 
+  // Unconditional runaway guard (DECISIONS.md #38). Trusts a direct hardware
+  // read and nothing else - deliberately not active_switch, switch_held,
+  // switch_driving or any table match, because those are what desync.
+  motion_failsafe_tick();
+
   sample_motor_faults_tick();
 
   // Live tilt for the app (BLE_GATT_DESIGN.md #6, DECISIONS.md #33). Both

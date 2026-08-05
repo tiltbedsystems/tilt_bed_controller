@@ -30,6 +30,7 @@
 #include "exp_board.h"
 #include "exp_ui.h"
 #include "motor_current_functions.h"
+#include "ble_bed_service.h"
 #include "settings_mode.h"
 
 // Series of #defines to use as switch input masks with packed variables.
@@ -47,6 +48,12 @@
 
 /// Double press error check time interval
 #define DOUBLE_PRESS_ERROR_CHECK_TIME_INTERVAL 50 // time in ms
+
+// Every SWITCH bit of the packed Port0/Port1 status word, and nothing else.
+// Port 0 is all eight single-side switches; Port 1 bits 0-3 are UP_ALL,
+// AUTO_LEVEL, DOWN_ALL and BED_LIGHTS. Bits 4-7 of Port 1 are the LED enable
+// OUTPUTS and are deliberately excluded - see the fail-safe below.
+#define SWITCH_INPUT_MASK 0xFF0F
 
 // Flags
 static bool read_ui_data = false; // Interrupt flag to read the UI status
@@ -139,6 +146,20 @@ static void start_double_press_error_timer()
 void app_reset_double_press_timer(void)
 {
   sl_sleeptimer_stop_timer(&double_press_error_timer);
+  // Discard any expiry that already fired. Stopping a timer must also drop
+  // its pending result, or the flag survives to be consumed at an arbitrary
+  // later moment (DECISIONS.md #38).
+  double_press_error_timer_timeout = false;
+}
+
+// Clears ALL of the panel's own state together. The double-press handler used
+// to clear active_switch alone, which was correct before the #37 split when
+// active_switch WAS all three - afterwards it left switch_held and
+// switch_driving stale, which is bench observations 1 and 2 (#38).
+static void clear_switch_panel_state(void)
+{
+  switch_held = OFF;
+  switch_driving = OFF;
 }
 
 // Maps each single-side switch mask to its active_switch_t value, motor side, and direction
@@ -263,6 +284,23 @@ static void process_inputs()
 {
   if (!in_settings_mode){
 
+      /*
+       * A press may only drive a motor if bed_control accepts THIS press
+       * (DECISIONS.md #38). switch_driving is cleared at the start of every
+       * press event and re-set below only when the verb returns true, so a
+       * stale value can never survive into process_outputs' press arm.
+       *
+       * Without this, a desynced switch_driving left the panel able to
+       * energise motors for a button whose bed_move_start() was never even
+       * called - motion with arbitration bypassed entirely, which is what
+       * bench observation 2 was: every other button dead because switch_held
+       * was stale, and the SAME button still moving the bed because
+       * switch_driving was.
+       */
+      if (switch_pressed) {
+          switch_driving = OFF;
+      }
+
       switch (app_ui_interrupt) // Configure controls based on activated switch
       {
         // Every press below is gated on switch_held, NOT active_switch
@@ -361,6 +399,112 @@ static void process_inputs()
    }
 }
 
+/*******************************************************************************
+ *** Motion fail-safe (DECISIONS.md #38)
+ *
+ * THE BED MUST NEVER MOVE WHILE NOTHING IS COMMANDING IT. Every other check in
+ * this file trusts some piece of bookkeeping - active_switch, switch_held,
+ * switch_driving, app_ui_interrupt, a table match. This one trusts none of
+ * them, because they are precisely the things that desync: bench observation 1
+ * was motors energised with active_switch == OFF, which also switches off
+ * run_motor_supervision() and leaves nothing that would ever stop them.
+ *
+ * It asks the hardware directly and nothing else: is any switch physically
+ * down? Is the app commanding? Is auto-level running? Is settings mode active?
+ * If all four are no and a motor is energised, that is a runaway by
+ * definition - de-energise.
+ *
+ * Rate-limited to FAILSAFE_SAMPLE_MS, matching the sample_motor_faults_tick()
+ * precedent: a direct read is blocking I2C on the UI expander, and per-pass
+ * blocking I2C on a shared bus is DECISIONS #27/#30's radio-starvation
+ * mechanism. Milliseconds via sleeptimer, never loop passes (#2).
+ *
+ * It requires FAILSAFE_CONFIRM_SAMPLES consecutive quiet samples before
+ * acting. That is what stops it fighting the normal paths: the window between
+ * a press being registered and its outputs applied is a single tick, far
+ * shorter than the confirm window, and in that window the switch IS physically
+ * down so the first test already fails. The confirm count only guards against
+ * a torn read at the exact moment of a release.
+ ******************************************************************************/
+
+#define FAILSAFE_SAMPLE_MS        50
+#define FAILSAFE_CONFIRM_SAMPLES  3   // ~150 ms of agreement before acting
+
+static uint32_t failsafe_last_sample_tick = 0;
+static uint8_t  failsafe_quiet_samples = 0;
+static bool     failsafe_tripped = false; // print once, not every pass
+
+static bool any_motor_energised_now(void)
+{
+  for (uint8_t i = 0; i < NUM_MOTORS; i++) {
+    if (motor_state[i].motor_on) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void motion_failsafe_tick(void)
+{
+  uint32_t now = sl_sleeptimer_get_tick_count();
+  if (sl_sleeptimer_tick_to_ms(now - failsafe_last_sample_tick) < FAILSAFE_SAMPLE_MS) {
+    return;
+  }
+  failsafe_last_sample_tick = now;
+
+  // Auto-level legitimately drives motors with no button held in the panel
+  // sense, and settings mode drives them from its own logic. Neither is a
+  // runaway, so neither is counted as quiet.
+  if (auto_level_active || in_settings_mode || ble_bed_service_app_motion_active()) {
+    failsafe_quiet_samples = 0;
+    failsafe_tripped = false;
+    return;
+  }
+
+  // DIRECT hardware read - deliberately not any cached flag. Switches are
+  // active low with pull-ups, so a switch bit reading 0 means that button is
+  // physically down. The LED bits (P1_4-P1_7) are masked out: they are
+  // outputs, and they are exactly what made the double-press check depend on
+  // something other than the switches (#35/#38).
+  uint16_t status = get_ui_status();
+  bool any_switch_down = ((status & SWITCH_INPUT_MASK) != SWITCH_INPUT_MASK);
+
+  if (any_switch_down) {
+    failsafe_quiet_samples = 0;
+    failsafe_tripped = false;
+    return;
+  }
+
+  if (!any_motor_energised_now()) {
+    failsafe_quiet_samples = 0;
+    failsafe_tripped = false;
+    return;
+  }
+
+  if (failsafe_quiet_samples < FAILSAFE_CONFIRM_SAMPLES) {
+    failsafe_quiet_samples++;
+    return;
+  }
+
+  // Nothing is commanding motion and a motor is on. De-energise.
+  set_all_motors_off();
+  for (uint8_t i = 0; i < NUM_MOTORS; i++) {
+    motor_state[i].motor_on = false;
+  }
+  set_LED_off(LED_GREEN);
+  set_LED_off(LED_BLUE);
+  set_LED_off(LED_RED);
+  clear_switch_panel_state();
+  active_switch = OFF;
+
+  if (!failsafe_tripped) {
+    failsafe_tripped = true;
+#if !BED_CAPTURE_MOTOR_CURRENTS
+    printf("FAILSAFE: motors energised with nothing commanding - stopped\r\n");
+#endif
+  }
+}
+
 // Called whenever there is a change in switch or expander interrupt state
 void sl_button_on_change(const sl_button_t *handle)
 {
@@ -430,8 +574,20 @@ void switch_input_tick(void)
       // collision and limit supervision must cover app moves too.
       bool switch_sourced_move = (bed_active_source() == BED_SOURCE_SWITCHES);
 
-      if (double_press_error_timer_timeout && switch_sourced_move){
+      // The flag is consumed UNCONDITIONALLY; only the check itself is gated
+      // (DECISIONS.md #38). Putting switch_sourced_move in the same condition
+      // as the clear - which is what #35 did - meant the flag went stale
+      // whenever the source was not SWITCHES, and a stale flag is then
+      // consumed at an arbitrary later moment instead of 50 ms after the
+      // latch. This check is only sound at that 50 ms point, because what
+      // makes a legitimate single press differ from its own latched status is
+      // the LED bits changing in between. Run it at any other time and it
+      // compares a steady state against an edge, and matches whenever the LED
+      // happens to line up. That is the misfire.
+      if (double_press_error_timer_timeout){
           double_press_error_timer_timeout = false;
+
+        if (switch_sourced_move){
 
           // Get source of switch interrupt
           app_ui_interrupt_new = get_ui_interrupt();
@@ -449,6 +605,13 @@ void switch_input_tick(void)
 #endif
               set_dual_motors_off(HEAD);
               set_dual_motors_off(FOOT);
+              // Clear the panel's state TOGETHER with active_switch (#38).
+              // Clearing active_switch alone left switch_held naming a button
+              // nobody was holding - so every other button failed its
+              // `switch_held == OFF` press test and went dead - and left
+              // switch_driving naming a button process_outputs would still
+              // energise on, which is motion with bed_control never consulted.
+              clear_switch_panel_state();
               active_switch = OFF;
               // Reset motor readings
               reset_ignore_data_points_count();
@@ -464,6 +627,7 @@ void switch_input_tick(void)
           } else {
 //              printf("No Error\r\n");
           }
+        }
       }
   }
 

@@ -817,6 +817,11 @@ bool ble_bed_service_status_subscribed(void)
   return status_subscriber_count > 0;
 }
 
+bool ble_bed_service_app_motion_active(void)
+{
+  return app_move_active || app_auto_level_active;
+}
+
 void ble_bed_service_tick(void)
 {
   // Control link dropped mid-command (BLE_GATT_DESIGN.md #5). Deferred out

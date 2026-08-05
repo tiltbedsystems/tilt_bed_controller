@@ -144,6 +144,15 @@ void app_move_stop(void)
   } else {
     motor_button_released();
   }
+
+  // De-energise the hardware, not just the bookkeeping (DECISIONS.md #38).
+  // The release helpers above only clear motor_state[] flags; before this,
+  // the physical path's ONLY hardware de-energise was process_outputs()'
+  // release arm, so any stop that did not reach that arm - a force-stop, a
+  // desynced switch_driving, an app stop - left the outputs live while every
+  // flag said the bed was stopped. A stop verb must stop the motors.
+  // Idempotent: process_outputs() may call this again in the same tick.
+  set_all_motors_off();
 }
 
 void app_auto_level_start(void)
