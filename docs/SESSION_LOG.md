@@ -864,3 +864,76 @@ the tightening was worth doing.
   by them.
 - **...that entry headings in this file are reliable dates.** The one above is
   wrong and is corrected here, not rewritten.
+
+---
+
+## 2026-08-04 (second) — Split active_switch; runaway root-caused but NOT closed
+
+**Commits**
+
+- `d9649a9` — Split active_switch: give the physical panel its own held-button
+  state. Plus the handoff commit after this entry.
+
+**The runaway is NOT closed. Read this before assuming it is.**
+
+The *mechanism* is confirmed: `process_outputs()` runs from the end of
+`process_inputs()` (`switch_input.c:297`) and its press arm energised on
+`active_switch == value` — a value the **app** could have written. So a
+physical press that `process_inputs` had just discarded still reached
+`set_dual_motors_on()` with `bed_control` never informed. Compounded by two
+things: the release conditions were asymmetric (`process_inputs` accepted
+`|| active_switch == OFF`, `process_outputs` did not, and that arm is the
+panel's only hardware de-energise), and `run_motor_supervision()` sits inside a
+block gated on `active_switch != OFF`, so motors energised while it is OFF have
+no supervision and nothing to stop them.
+
+**But I could not construct a sequence I am confident reproduces the single
+observed event** — every candidate ended with some other path calling
+`set_all_motors_off()`. The split removes the class; it is not proof the
+observed runaway is gone, and that observation was intermittent to begin with.
+
+**VERIFIED (code facts)**
+
+- `process_inputs`' press guard `active_switch == OFF` discarded every physical
+  press while the app was moving (pre-change `switch_input.c:277`) — bench
+  failures (d)/(e), and the "same button" exception falls straight out of the
+  release branch still matching.
+- Stale limit flags **block** `set_dual_motors_on()`
+  (`dual_motor_control.c:330,338,349,357,368`), and the clear branch only runs
+  while a motor is on **and moving** (`:232-238`). That is the "bed stops
+  responding" half of the auto-level lockup and why a manual tap cleared it.
+- `switch_held`/`switch_driving` are `static` in `switch_input.c` with no
+  accessor — the app cannot write them.
+- Firmware builds clean; host unit test still 30/30 (`bed_control.c` unchanged,
+  so that is a regression check, not new coverage).
+
+**ASSERTED**
+
+- Everything behavioural. Nothing flashed. In particular A1: **the runaway is
+  not claimed fixed.**
+- Normal panel operation is the biggest regression risk — the panel's
+  press/release matching variable changed. Acceptance step (i) exists for that.
+
+**Open**
+
+- Acceptance steps a–j in `fw_HANDOFF_2026-08-04_02`. Step (g) is a ~50-tap
+  runaway hunt across four source states; pass 4 (app holding the same button
+  being tapped) is the only one that exercises the confirmed mechanism.
+- Four review questions: the `active_switch == OFF` **supervision gap is still
+  open** (closing it means touching the #35 gate's enclosing condition); the
+  auto-level path can still blip amber via `app_auto_level_stop()`'s
+  `set_all_LED_off()`; clearing all limit flags on every stop is deliberately
+  blunt; a refused press still occupies the panel's held slot until released.
+- Release-config pass and the manual-move loop-rate measurement still owed.
+
+**The next session must NOT assume**
+
+- **...that the runaway is fixed.** The class is removed; the event was never
+  reproduced. Treat it as open.
+- **...that `active_switch` answers "is a physical button held?".** It never
+  did. `switch_held` does. Two readers got that wrong (#35, #37); a third
+  would be a pattern, not a coincidence.
+- **...that motors energised while `active_switch == OFF` are supervised.**
+  They are not — `run_motor_supervision()` is inside a block gated on it.
+- **...that `bed_status.c` needed changing.** It did not; `active_switch`
+  remains the command variable.
