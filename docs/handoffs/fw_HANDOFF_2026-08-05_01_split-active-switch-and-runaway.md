@@ -1,4 +1,57 @@
-# fw_HANDOFF_2026-08-04_02 — split active_switch; runaway root-cause; false limits
+> **FILENAME CORRECTION — read this first.**
+>
+> Originally written as
+> `fw_HANDOFF_2026-08-05_01_split-active-switch-and-runaway.md`. **Both the
+> date and the sequence number were wrong.** This session ran on
+> **2026-08-05**, and it was the first session of that day, so it is `_01`.
+>
+> The body below is byte-identical to what was committed in `8724e74`, apart
+> from this note and the corrected header fields.
+>
+> **This is the second consecutive session with this error**, and the previous
+> correction's own "must NOT assume" line said exactly this would happen. The
+> cause is not carelessness about dates in general — it is that the handoff
+> filename gets written at the *end* of a long session by copying the previous
+> session's name and incrementing it, which silently inherits its date.
+> `CLAUDE.md`'s handoff section now carries an explicit rule to derive the date
+> from `date` and never from a previous filename. The Stop hook caught it both
+> times, which is the only reason neither reached the reviewer misdated.
+>
+> **Other handoff files are unaffected.** `git log --date=short` confirms
+> `5351aef`/`fef5323` are 2026-08-04, so `fw_HANDOFF_2026-08-04_01_*` is
+> correctly named, and `_01` through `_06` are correctly 2026-08-02.
+>
+> **Corrected header values**, superseding §a below where they differ:
+>
+> | Field | Correct value |
+> |---|---|
+> | Session date | **2026-08-05** |
+> | HEAD before session | `c706893` |
+> | HEAD after the work commit | `d9649a9` |
+> | HEAD after the (misdated) handoff commit | `8724e74` |
+> | HEAD after this correction | see the commit that adds this file |
+>
+> `git status` at the end of this correction:
+>
+> ```
+> On branch main
+> Your branch is ahead of 'origin/main' by 33 commits.
+>
+> Changes not staged for commit:
+> 	modified:   .projectlinkstore
+>
+> Untracked files:
+> 	.projectchecksums
+> 	tilt_bed_controller_project.pdf
+> ```
+>
+> Nothing about the technical content changed. In particular §b.1's conclusion
+> stands: **the runaway is root-caused as a mechanism but was never reproduced,
+> and is not claimed fixed.**
+
+---
+
+# fw_HANDOFF_2026-08-05_01 — split active_switch; runaway root-cause; false limits
 
 Fixes the swallowed physical press, the auto-level lockup, the false limit
 flags and the indicator blip. **The runaway is root-caused as a mechanism but
@@ -15,7 +68,7 @@ anything else here.
 | Branch | `main` |
 | HEAD before session | `c706893` |
 | HEAD after session | `d9649a9` (plus this handoff's own commit) |
-| Session date | 2026-08-04 |
+| Session date | 2026-08-05 (see the correction note above) |
 | Build | Firmware clean, `base` config. Host unit test 30/30. Not flashed. |
 
 ### Commits this session
@@ -35,7 +88,7 @@ Changes not staged for commit:
 
 Untracked files:
 	.projectchecksums
-	docs/handoffs/fw_HANDOFF_2026-08-04_02_split-active-switch-and-runaway.md
+	docs/handoffs/fw_HANDOFF_2026-08-05_01_split-active-switch-and-runaway.md
 	tilt_bed_controller_project.pdf
 ```
 

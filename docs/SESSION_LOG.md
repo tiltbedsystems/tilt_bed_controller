@@ -937,3 +937,45 @@ observed runaway is gone, and that observation was intermittent to begin with.
   They are not — `run_motor_supervision()` is inside a block gated on it.
 - **...that `bed_status.c` needed changing.** It did not; `active_switch`
   remains the command variable.
+
+---
+
+## 2026-08-05 — CORRECTION: the entry above is dated wrong, for the second time running
+
+**Commits:** the correction commit that follows this entry. No firmware change.
+
+The entry above is headed "2026-08-04 (second)". **It ran on 2026-08-05.**
+`git log --date=short` is the evidence — `d9649a9` and `8724e74` are both
+2026-08-05, while `5351aef`/`fef5323`/`c706893` are 2026-08-04.
+
+The handoff file was misnamed twice over: wrong date **and** wrong sequence
+number (it was the first session of 2026-08-05, so `_01`, not `_02`).
+`fw_HANDOFF_2026-08-04_02_split-active-switch-and-runaway.md` is deleted and
+replaced by `fw_HANDOFF_2026-08-05_01_split-active-switch-and-runaway.md`,
+body identical plus a correction note. `fw_HANDOFF_2026-08-04_01_*` is
+correctly named and untouched.
+
+**This is the second consecutive session with the same error, and the previous
+correction predicted it.** Its own "must NOT assume" line said not to carry a
+date forward. That did not work, because the failure is not a belief about the
+date — it is that the filename gets written at the end of a long session by
+copying the previous session's name and incrementing `<NN>`, which inherits
+the date silently and never surfaces as a decision.
+
+**So the fix this time is in `CLAUDE.md`, not in a resolution.** The handoff
+filename section now says explicitly: derive the date from the system date at
+the moment of writing, never from a previous filename, a previous log entry,
+or earlier in the conversation; and `<NN>` restarts at `01` on a new date
+rather than continuing the previous day's numbering.
+
+**The Stop hook caught it both times.** That is twice now that
+`check-handoff-file.ps1`'s per-session, fail-closed check has been the only
+thing standing between a misdated artifact and the reviewer. The
+existence-only version originally built would have caught neither.
+
+**The next session must NOT assume**
+
+- **...that entry headings or handoff filenames in this repo are reliable
+  dates without checking.** Two are wrong and corrected by later entries.
+- **...that the `CLAUDE.md` rule makes this impossible.** It makes it a
+  written step; the hook is still the only thing that enforces it.

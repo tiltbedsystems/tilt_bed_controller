@@ -130,7 +130,15 @@ description of a plan instead of the plan cannot review it. See
 docs/handoffs/fw_HANDOFF_<YYYY-MM-DD>_<NN>_<slug>.md
 ```
 
-- `<NN>` — two-digit sequence within that date, starting at `01`.
+- `<YYYY-MM-DD>` — **derive this from the system date at the moment you write
+  the file. Never copy it from a previous handoff filename, from an earlier
+  entry in `docs/SESSION_LOG.md`, or from earlier in the conversation.** This
+  has been got wrong twice (2026-08-04, 2026-08-05), both times by copying the
+  previous session's filename and incrementing `<NN>`, which silently inherits
+  its date. A session can also outlive the date it started on. Run `date`
+  (or check `git log --date=short`) and use what it says.
+- `<NN>` — two-digit sequence within **that** date, starting at `01`. A new
+  date restarts at `01`; it does not continue the previous day's numbering.
 - `<slug>` — short kebab-case description.
 - **The `fw_` prefix is mandatory.** The sibling app repo uses `app_`, and
   both repos' files upload to the same place; a bare name collides and one
