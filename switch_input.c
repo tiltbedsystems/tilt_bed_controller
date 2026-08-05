@@ -76,6 +76,33 @@ bool switch_pressed = false; // Interrupt flag to capture switch up/down state -
   All switches have pull-ups and all LED's are active low.
  */
 
+/*
+ * PHYSICAL PANEL STATE - owned exclusively by this file (DECISIONS.md #37).
+ *
+ * These exist because active_switch could not answer "is a physical button
+ * currently held?". It is the COMMAND variable, written by whichever source
+ * is driving the bed, so an app move set it through the same
+ * motor_button_pressed() the panel uses. Two readers here needed the panel
+ * question and asked the command variable instead:
+ *
+ *   - process_inputs()'s press guard, which skipped every physical press
+ *     while the app was moving, so the press never reached bed_control and
+ *     no conflict was ever detected;
+ *   - process_outputs()'s press/release pairing, which could be energised by
+ *     an app-written value and left unpaired when the app changed it.
+ *
+ *   switch_held    which physical button is physically down, set on press and
+ *                  cleared on release REGARDLESS of whether the command was
+ *                  accepted - so the release always reaches bed_control and
+ *                  releases this source's half of the #36 latch.
+ *   switch_driving the same value, but only when bed_control ACCEPTED the
+ *                  press. process_outputs energises and de-energises on this
+ *                  one, so a refused press never drives a motor and an
+ *                  accepted one is always paired with its own release.
+ */
+static active_switch_t switch_held = OFF;
+static active_switch_t switch_driving = OFF;
+
 static uint16_t app_ui_status;
 static uint16_t app_ui_status_new; // Used for double press error check
 uint16_t app_ui_interrupt; // Packed Port0/1 interrupt source(s) - extern via switch_input.h
@@ -153,40 +180,43 @@ static void process_outputs()
     switch (app_ui_interrupt) // Configure controls based on activated switch
     {
       case SWITCH_UP_ALL:
-          if ((switch_pressed) && (active_switch == SWITCH_UP_ALL_VALUE)){
+          if ((switch_pressed) && (switch_driving == SWITCH_UP_ALL_VALUE)){
               set_LED_on(LED_BLUE);
               set_all_motors_on();
-          } else if ((!switch_pressed) && (active_switch == SWITCH_UP_ALL_VALUE)){
+          } else if ((!switch_pressed) && (switch_driving == SWITCH_UP_ALL_VALUE)){
               set_LED_off(LED_BLUE);
               set_all_motors_off();
+              switch_driving = OFF;
               active_switch = OFF;
           }
           break;
 
       case SWITCH_AUTO_LEVEL:
-          if ((switch_pressed) && (active_switch == SWITCH_AUTO_LEVEL_VALUE)){
+          if ((switch_pressed) && (switch_driving == SWITCH_AUTO_LEVEL_VALUE)){
               set_LED_on(LED_RED);
               set_all_motors_off();
-          } else if ((!switch_pressed) && (active_switch == SWITCH_AUTO_LEVEL_VALUE)){
+          } else if ((!switch_pressed) && (switch_driving == SWITCH_AUTO_LEVEL_VALUE)){
               set_all_motors_off();
               auto_level_stop_blink_LED(LED_RED);
+              switch_driving = OFF;
               active_switch = OFF;
           }
           break;
 
       case SWITCH_DOWN_ALL:
-          if ((switch_pressed) && (active_switch == SWITCH_DOWN_ALL_VALUE)){
+          if ((switch_pressed) && (switch_driving == SWITCH_DOWN_ALL_VALUE)){
               set_LED_on(LED_BLUE);
               set_all_motors_on();
-          } else if ((!switch_pressed) && (active_switch == SWITCH_DOWN_ALL_VALUE)){
+          } else if ((!switch_pressed) && (switch_driving == SWITCH_DOWN_ALL_VALUE)){
               set_LED_off(LED_BLUE);
               set_all_motors_off();
+              switch_driving = OFF;
               active_switch = OFF;
           }
           break;
 
       case SWITCH_BED_LIGHTS:
-          if ((switch_pressed) && (active_switch == SWITCH_BED_LIGHT_VALUE)){
+          if ((switch_pressed) && (switch_driving == SWITCH_BED_LIGHT_VALUE)){
               if (app_lights_on()){
                   set_LED_on(LED_AMBER);
                   set_underbed_lighting_on();}
@@ -194,7 +224,8 @@ static void process_outputs()
                   set_LED_off(LED_AMBER);
                   set_underbed_lighting_off();
               }
-          } else if ((!switch_pressed) && (active_switch == SWITCH_BED_LIGHT_VALUE)){
+          } else if ((!switch_pressed) && (switch_driving == SWITCH_BED_LIGHT_VALUE)){
+              switch_driving = OFF;
               active_switch = OFF;
           }
           break;
@@ -202,12 +233,13 @@ static void process_outputs()
     default: {
         for (uint8_t t = 0; t < NUM_MOTOR_SWITCH_TABLE_ENTRIES; t++) {
             if (app_ui_interrupt == motor_switch_table[t].mask) {
-                if ((switch_pressed) && (active_switch == motor_switch_table[t].value)){
+                if ((switch_pressed) && (switch_driving == motor_switch_table[t].value)){
                     set_LED_on(LED_GREEN);
                     set_dual_motors_on(motor_switch_table[t].side); // Motor statuses are set in "set_dual_motors_on/off()" function
-                } else if ((!switch_pressed) && (active_switch == motor_switch_table[t].value)){
+                } else if ((!switch_pressed) && (switch_driving == motor_switch_table[t].value)){
                     set_LED_off(LED_GREEN);
                     set_all_motors_off();
+                    switch_driving = OFF;
                     active_switch = OFF;
                 }
                 break;
@@ -233,35 +265,55 @@ static void process_inputs()
 
       switch (app_ui_interrupt) // Configure controls based on activated switch
       {
+        // Every press below is gated on switch_held, NOT active_switch
+        // (DECISIONS.md #37). The old guard asked "is the bed idle?" when it
+        // meant "is a physical button already down?", so while the app was
+        // moving the bed every physical press was silently discarded and no
+        // conflict was ever reported.
         case SWITCH_UP_ALL:
-            if (switch_pressed && (active_switch == OFF)){
-                bed_move_start(BED_SOURCE_SWITCHES, BED_TARGET_ALL, BED_DIR_UP);
-            } else if ((!switch_pressed) && (active_switch == SWITCH_UP_ALL_VALUE || active_switch == OFF)){
+            if (switch_pressed && (switch_held == OFF)){
+                switch_held = SWITCH_UP_ALL_VALUE;
+                if (bed_move_start(BED_SOURCE_SWITCHES, BED_TARGET_ALL, BED_DIR_UP)) {
+                    switch_driving = SWITCH_UP_ALL_VALUE;
+                }
+            } else if ((!switch_pressed) && (switch_held == SWITCH_UP_ALL_VALUE)){
+                switch_held = OFF;
                 bed_move_stop(BED_SOURCE_SWITCHES);
             }
             break;
 
         case SWITCH_AUTO_LEVEL:
-            if (switch_pressed && (active_switch == OFF)){
-                bed_auto_level_start(BED_SOURCE_SWITCHES);
-            } else if ((!switch_pressed) && (active_switch == SWITCH_AUTO_LEVEL_VALUE || active_switch == OFF)){
+            if (switch_pressed && (switch_held == OFF)){
+                switch_held = SWITCH_AUTO_LEVEL_VALUE;
+                if (bed_auto_level_start(BED_SOURCE_SWITCHES)) {
+                    switch_driving = SWITCH_AUTO_LEVEL_VALUE;
+                }
+            } else if ((!switch_pressed) && (switch_held == SWITCH_AUTO_LEVEL_VALUE)){
+                switch_held = OFF;
                 bed_auto_level_stop(BED_SOURCE_SWITCHES);
             }
             break;
 
         case SWITCH_DOWN_ALL:
-            if (switch_pressed && (active_switch == OFF)){
-                bed_move_start(BED_SOURCE_SWITCHES, BED_TARGET_ALL, BED_DIR_DOWN);
-            } else if ((!switch_pressed) && (active_switch == SWITCH_DOWN_ALL_VALUE || active_switch == OFF)){
+            if (switch_pressed && (switch_held == OFF)){
+                switch_held = SWITCH_DOWN_ALL_VALUE;
+                if (bed_move_start(BED_SOURCE_SWITCHES, BED_TARGET_ALL, BED_DIR_DOWN)) {
+                    switch_driving = SWITCH_DOWN_ALL_VALUE;
+                }
+            } else if ((!switch_pressed) && (switch_held == SWITCH_DOWN_ALL_VALUE)){
+                switch_held = OFF;
                 bed_move_stop(BED_SOURCE_SWITCHES);
             }
             break;
 
         case SWITCH_BED_LIGHTS:
-            if (switch_pressed && (active_switch == OFF)){
-                bed_lights_set(BED_SOURCE_SWITCHES, !app_lights_on());
-
-            } else if ((!switch_pressed) && (active_switch == SWITCH_BED_LIGHT_VALUE || active_switch == OFF)){
+            if (switch_pressed && (switch_held == OFF)){
+                switch_held = SWITCH_BED_LIGHT_VALUE;
+                if (bed_lights_set(BED_SOURCE_SWITCHES, !app_lights_on())) {
+                    switch_driving = SWITCH_BED_LIGHT_VALUE;
+                }
+            } else if ((!switch_pressed) && (switch_held == SWITCH_BED_LIGHT_VALUE)){
+                switch_held = OFF;
                 sl_sleeptimer_stop_timer(&double_press_error_timer);
                 /*** For "Settings Mode" ***/
                 settings_mode_cancel_entry();
@@ -274,11 +326,15 @@ static void process_inputs()
             for (uint8_t t = 0; t < NUM_MOTOR_SWITCH_TABLE_ENTRIES; t++) {
                 if (app_ui_interrupt == motor_switch_table[t].mask) {
                     matched = true;
-                    if (switch_pressed && (active_switch == OFF)) {
-                        bed_move_start(BED_SOURCE_SWITCHES,
-                                       side_to_target(motor_switch_table[t].side),
-                                       motor_switch_table[t].up ? BED_DIR_UP : BED_DIR_DOWN);
-                    } else if ((!switch_pressed) && (active_switch == motor_switch_table[t].value || active_switch == OFF)) {
+                    if (switch_pressed && (switch_held == OFF)) {
+                        switch_held = motor_switch_table[t].value;
+                        if (bed_move_start(BED_SOURCE_SWITCHES,
+                                           side_to_target(motor_switch_table[t].side),
+                                           motor_switch_table[t].up ? BED_DIR_UP : BED_DIR_DOWN)) {
+                            switch_driving = motor_switch_table[t].value;
+                        }
+                    } else if ((!switch_pressed) && (switch_held == motor_switch_table[t].value)) {
+                        switch_held = OFF;
                         bed_move_stop(BED_SOURCE_SWITCHES);
                     }
                     break;

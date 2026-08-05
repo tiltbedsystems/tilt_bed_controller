@@ -1320,3 +1320,120 @@ never inhibited. All 30 checks pass on the host.
 That is real executed evidence for the arbitration logic. Everything above it
 — the LED behaviour, the auto-level hold-to-run feel, the watchdog on a
 stalled link — remains **ASSERTED** until the bench run.
+
+## 37. Splitting `active_switch`: the panel needed its own state
+
+Reverses the decision recorded in #35, on the test #35 itself set: *"What would
+change my mind: a second panel-specific reader. One is a missing predicate;
+two is a missing abstraction."* The second reader turned up. #35's decision was
+correct on the evidence then available; this is new evidence.
+
+### The two readers
+
+`active_switch` is the **command** variable — what the bed is doing, whoever
+asked. Both sources write it, because both go through `bed_actions.c`. That
+sharing is why `bed_status.c` reports app activity with no code, and it stays.
+
+Two readers needed a different question — *"is a physical button currently
+held?"* — and asked `active_switch` instead:
+
+1. **The double-press check** (#35). Fixed there with a source predicate.
+2. **`process_inputs()`'s press guard**, `active_switch == OFF`. While the app
+   was moving the bed this was false, so **every physical press was silently
+   discarded** — it never reached `bed_control`, no conflict was detected, the
+   #36 latch never armed, and nothing stopped. That is bench failures (d)
+   and (e).
+
+Its "same button" exception falls straight out: with the app holding ALL UP,
+`active_switch == SWITCH_UP_ALL_VALUE`, so the press was skipped but the
+*release* branch matched and called `bed_move_stop()`, which force-stopped —
+a brief blip on release, only for the matching button, after which the app's
+100 ms repeat restarted the bed.
+
+### The runaway
+
+`process_outputs()` runs from the end of `process_inputs()`. Its press arm
+energised on `switch_pressed && (active_switch == value)` — and `active_switch`
+could hold that value because the **app** put it there. So a physical press
+that `process_inputs` had just discarded still reached
+`set_dual_motors_on()`: motors energised by the panel path with `bed_control`
+never informed.
+
+Both arms depended on a variable the app could change between press and
+release, so the pairing was breakable. Two things made that dangerous rather
+than merely redundant:
+
+- **Asymmetric release conditions.** `process_inputs`' release accepted
+  `active_switch == value || active_switch == OFF`; `process_outputs`' release
+  arm accepted only `active_switch == value`. The physical path's *only*
+  hardware de-energise is that arm — `bed_move_stop()` →
+  `app_move_stop()` → `motor_button_released()` clears `motor_state` flags and
+  leaves the outputs on.
+- **No supervision when `active_switch == OFF`.** `switch_input_tick()`'s
+  block, which contains `run_motor_supervision()`, is gated on
+  `active_switch != OFF`. Motors energised in that state have no collision
+  detection, no limit inference, and no path that will turn them off.
+
+**Honest status:** the mechanism above is verified from the code. I could not
+construct a single sequence I am confident reproduces the one observed
+runaway — every candidate ended with some other path calling
+`set_all_motors_off()`. One non-reproducing observation is not evidence of a
+fix. What the split does is remove the *class*: see below.
+
+### The split
+
+`switch_input.c` gains two file-private variables, and `active_switch` keeps
+its meaning unchanged:
+
+- **`switch_held`** — which physical button is physically down. Set on press,
+  cleared on release, **regardless of whether the command was accepted**, so a
+  release always reaches `bed_control` and always releases this source's half
+  of the #36 latch.
+- **`switch_driving`** — the same value, but only when `bed_control` *accepted*
+  the press. `process_outputs()` energises and de-energises on this one.
+
+What that makes impossible:
+
+- The app cannot write either variable, so **`process_outputs` can never
+  energise a motor from an app-set value.**
+- A refused press leaves `switch_driving == OFF`, so **a press that
+  `bed_control` rejected cannot drive a motor.**
+- `switch_driving` is unaffected by anything the app does, so **an accepted
+  press is always paired with its own release** — the release arm cannot be
+  orphaned by the app changing `active_switch`.
+- `process_inputs` now gates on `switch_held`, so **a physical press during an
+  app move reaches `bed_control` and latches #36**, in both directions.
+
+`bed_status.c` needs no change: `active_switch` is still the command variable
+and still tracks app-sourced activity. `run_motor_supervision()` stays outside
+the double-press gate, unchanged. The #35 fix is untouched.
+
+### The false limit flags — a separate defect
+
+`limit_switch_statuses()` infers `at_limit_switch[motor].upper = true` from
+"commanded on but not moving", and only clears it again while that motor is on
+**and moving**. A motor left with a stale `motor_on` flag on a physically
+stopped bed therefore latches a limit that nothing can clear.
+
+That is not cosmetic. `set_dual_motors_on()` refuses to energise a pair whose
+limit flag is set, so a stale flag makes the bed stop responding — the "physical
+auto-level flashes red but never runs" half of the lockup, and why tapping a
+manual button cleared it (that move re-entered the clearing branch).
+
+Fixed by clearing the inferred state on every full stop
+(`reset_limit_switch_flags()`, called from `app_stop_all()` and
+`app_stop_movement()`). A stop means nothing is commanded, so every inference
+is stale by definition; real limits are re-inferred within about a second of
+the next move, which is already how the flags behave after any normal stop.
+
+### The indicator blip
+
+`app_stop_movement()` called `app_stop_all()`, whose `set_all_LED_off()`
+cleared amber, and then turned amber back on — the blip itself. It now clears
+the three movement LEDs individually and never touches amber.
+
+**Residual, not fixed:** when the conflict interrupts *auto-level*,
+`app_stop_movement()` still routes through `app_auto_level_stop()`, which calls
+`set_all_LED_off()`. The blip can therefore still occur on that one path.
+Recorded rather than fixed, because fixing it means changing a function the
+physical auto-level path also uses.

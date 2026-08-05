@@ -216,6 +216,7 @@ void app_stop_all(void)
       motor_state[i].motor_on = false;
   }
   set_all_LED_off();
+  reset_limit_switch_flags(); // stale inferred limits must not survive a stop (#37)
   active_switch = OFF;
 }
 
@@ -320,10 +321,31 @@ void app_release_active_switch(void)
 // STOP_ALL still calls app_stop_all() directly and keeps its full behaviour.
 void app_stop_movement(void)
 {
-  app_stop_all();
-  if (bedlights_on) {
-    set_LED_on(LED_AMBER);
+  if (auto_level_active) {
+    app_auto_level_stop();
+  } else if (active_switch != OFF) {
+    app_move_stop();
   }
+  set_all_motors_off();
+  for (uint8_t i = 0; i < NUM_MOTORS; i++) {
+    motor_state[i].motor_on = false;
+  }
+
+  // Movement indicators ONLY. This used to call app_stop_all(), whose
+  // set_all_LED_off() cleared amber, and then turn amber back on - which is
+  // exactly the blip the bench saw on the under-bed indicator. Clearing the
+  // three movement LEDs individually means amber is never touched.
+  set_LED_off(LED_GREEN);
+  set_LED_off(LED_BLUE);
+  set_LED_off(LED_RED);
+
+  // A stop invalidates every inferred limit (DECISIONS.md #37). Without this
+  // a stale flag survives the stop and set_dual_motors_on() then refuses to
+  // energise that pair, which is the "bed stops responding" half of the
+  // auto-level lockup.
+  reset_limit_switch_flags();
+
+  active_switch = OFF;
 }
 
 bool app_bed_is_idle(void)

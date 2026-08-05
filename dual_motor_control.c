@@ -202,6 +202,29 @@ void auto_level_limit_switch_motor_off(uint8_t motor, int8_t auto_level_current_
 
 }
 
+/*
+ * Clears the INFERRED limit state for every motor (DECISIONS.md #37).
+ *
+ * at_limit_switch[] is not a sensor reading - limit_switch_statuses() infers
+ * it from "commanded on but not moving", and only ever clears it again while
+ * that motor is on AND moving. So a motor left with a stale motor_on flag
+ * while the bed is physically stopped latches a limit that nothing can clear,
+ * and set_dual_motors_on()'s guards below then refuse to energise that pair -
+ * the bed stops responding until some other move happens to clear it.
+ *
+ * A full stop means nothing is commanded, so every inference is stale by
+ * definition. Called from the stop paths. Real limits are re-inferred within
+ * about a second of the next move, which is already how the flags behave
+ * after any normal stop.
+ */
+void reset_limit_switch_flags(void)
+{
+  for (uint8_t i = 0; i < NUM_MOTORS; i++) {
+    at_limit_switch[i].upper = false;
+    at_limit_switch[i].lower = false;
+  }
+}
+
 void limit_switch_statuses(uint8_t motor, active_switch_t switch_value, int8_t auto_level_current_axis){
 
   // Determine if motor is moving or not

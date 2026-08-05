@@ -62,6 +62,12 @@ void auto_level_limit_switch_motor_off(uint8_t motor, int8_t auto_level_current_
 void all_motor_limit_switch_temp_off();
 
 void limit_switch_statuses(uint8_t motor, active_switch_t switch_value, int8_t auto_level_current_axis);
+
+// Clears the INFERRED at_limit_switch[] state for every motor. Called from the
+// stop paths: a stop means nothing is commanded, so any "commanded on but not
+// moving" inference is stale, and a stale one blocks set_dual_motors_on()
+// permanently. See the comment above the definition (DECISIONS.md #37).
+void reset_limit_switch_flags(void);
 void reverse_motor_direction_and_start(active_switch_t switch_value);
 
 #endif /* DUAL_MOTOR_CONTROL_H_ */
