@@ -1055,3 +1055,70 @@ running. It is a live diagnostic for the most dangerous state this system has.
 - **...that the double-press check is sound.** Its correctness still rests on
   LED bits changing between latch and re-read, which is incidental rather than
   designed. Only its flag lifecycle was fixed.
+
+---
+
+## 2026-08-05 (third) — Bench-only runaway provocation; fail-safe cleanup gaps
+
+**Commits**
+
+- `732dfed` — Bench-only runaway provocation to prove the fail-safe, plus two
+  cleanup gaps. Plus the handoff commit after this entry.
+
+Closes the *means* to test #38's assumption A4. **It does not close A4.**
+
+**VERIFIED**
+
+- **The provocation would NOT have worked as first written.** The flag was
+  defined next to the fail-safe near the end of the file; the trigger sites are
+  in `process_inputs()`, earlier, so `#if BED_BENCH_PROVOKE_RUNAWAY` there
+  evaluated an undefined macro to 0 and compiled them out.
+  `-Wunused-function` on `provoke_arm` is the only thing that exposed it.
+  **The failure would have looked exactly like success** — flag on, clean
+  build, tap the button, no runaway, no print, obvious reading "the fail-safe
+  works". A bench session would have produced a false VERIFIED. Flag moved to
+  the top of the file; definitions now precede uses (grep in the handoff §d.3).
+- Both flag states build clean and warning-free; the flag is committed `0`.
+- The provocation energises through the same calls the real paths use
+  (`set_dual_motors_on(HEAD)` / `set_all_motors_on()`).
+- **Fail-safe trip state, reviewed from code.** Already correct: outputs,
+  `motor_state` flags, movement LEDs, `switch_held`, `switch_driving`,
+  `active_switch`. `app_move_active` cannot be stale — it is a precondition of
+  the fail-safe running. `active_source` self-releases on the next
+  `bed_control_tick()`.
+- **Two real gaps, both closed:** the switches' half of the #36 latch (clearing
+  `switch_held` means a later release never reaches `bed_move_stop()`, so
+  `source_commanding[SWITCHES]` would stay set and the inhibit latch forever),
+  and the inferred limit flags that every other stop path already clears.
+
+**ASSERTED**
+
+- **A1: the fail-safe catches a runaway. STILL UNPROVEN.** This session built
+  the test and did not run it.
+- That the provocation energises on hardware. Note `set_dual_motors_on()`
+  refuses at a limit flag, so a bed at its upper limit produces no runaway and
+  **looks like a pass** — the instructions say to start mid-stroke.
+- ~150–200 ms / 1–3 mm of travel is arithmetic plus an assumed actuator speed;
+  the measured number comes from the `PROVOKE:` print.
+
+**Open**
+
+- **Run the provocation.** Handoff `fw_HANDOFF_2026-08-05_03`, steps 1–8,
+  including turning the flag back off and confirming with `git diff --stat`,
+  and reflashing the normal build afterwards.
+- If it does not fire, the first suspect is `SWITCH_INPUT_MASK` — still
+  unverified against a schematic, carried from #38.
+- Ungating supervision from `active_switch`, still open from #38.
+- Release-config pass and manual-move loop-rate measurement still owed.
+
+**The next session must NOT assume**
+
+- **...that the fail-safe works.** It has never caught a runaway. The
+  provocation exists; that is all.
+- **...that a bench flag being ON means it is doing anything.** Build with it
+  on and read the warnings. This one silently did nothing, and its failure mode
+  was indistinguishable from the hoped-for result.
+- **...that the provocation build is safe to leave on the bed.** It drives a
+  motor pair every time UP HEAD or UP ALL is tapped.
+- **...that a clean `git diff` on `switch_input.c` was checked automatically.**
+  Nothing enforces the flag being off except reading it.
