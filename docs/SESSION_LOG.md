@@ -979,3 +979,79 @@ existence-only version originally built would have caught neither.
   dates without checking.** Two are wrong and corrected by later entries.
 - **...that the `CLAUDE.md` rule makes this impossible.** It makes it a
   written step; the hook is still the only thing that enforces it.
+
+---
+
+## 2026-08-05 (second) — Double-press misfire, arbitration bypass, motion fail-safe
+
+**Commits**
+
+- `165fea1` — Fix the double-press misfire, the state it desynced, and add a
+  motion fail-safe. Plus the handoff commit after this entry.
+
+**Context correction accepted:** the runaway reproduction was taken on the
+**pre-split** build. It corroborates the mechanism documented in #37 rather
+than showing a second path; #37's posture stands as written.
+
+**VERIFIED (code facts)**
+
+- **The misfire is mine, from #35.** The check is only sound 50 ms after the
+  latch, because the LED bits changing in between are what make a legitimate
+  single press differ from its own latched status. #35 wrote the consume as
+  `if (timeout && switch_sourced_move) { timeout = false; ... }` — gate inside
+  the clear — so whenever the source was not SWITCHES the flag went stale and
+  was consumed at an arbitrary later moment, comparing a steady state against
+  an edge. `app_reset_double_press_timer()` compounded it by stopping the
+  timer without discarding a pending expiry. The timer is periodic.
+- **Observation 1 confirmed.** `run_motor_supervision()` is inside a block
+  gated on `active_switch != OFF` (`switch_input.c:333`); the handler set
+  `active_switch = OFF`, so supervision stopped and the app faithfully reported
+  0 mA while motors ran. This is #37's §b.1 fact 2 on the bench.
+- **Observation 2 is BOTH mechanisms, and (b) is confirmed.** With
+  `switch_held` stale, the press guard fails for **every** button, so
+  `bed_move_start()` was never called for LEFT DOWN either — yet LEFT DOWN
+  moved the bed. The only remaining energise path is `process_outputs()`'
+  press arm on `switch_driving`. **That is motion with `bed_control` bypassed
+  entirely**, and it got its own fix rather than being folded into the handler
+  cleanup.
+- Firmware builds clean; host unit test 30/30.
+
+**Recorded permanently in DECISIONS #38, worth repeating here:** motors
+visibly running with **0 mA on all four** in the app means supervision is not
+running. It is a live diagnostic for the most dangerous state this system has.
+
+**ASSERTED**
+
+- All of it — nothing flashed.
+- **The fail-safe is untested in the direction that matters.** It has never
+  been shown to catch a real runaway, only (in principle) to stay quiet. And
+  the most likely thing to be wrong is that it misfires in normal use, which
+  is why acceptance step (e) runs first.
+- `SWITCH_INPUT_MASK` = `0xFF0F` is derived from the bit-map comment in
+  `switch_input.c`, not from a schematic. If it is wrong the fail-safe either
+  never fires or fires constantly.
+
+**Open**
+
+- Acceptance steps a–h in `fw_HANDOFF_2026-08-05_02`; **step (e) first**.
+- **Supervision should probably not be gated on `active_switch` at all.** A
+  gate that switches off collision detection is the wrong shape, and this one
+  can be cleared by an error handler — which is what happened. Not changed
+  because that gate also encloses the bench-confirmed #35 check. Recorded as
+  the next thing to fix in this area.
+- Four review questions, including the 150 ms fail-safe confirm window and the
+  switch mask.
+- Release-config pass and manual-move loop-rate measurement still owed.
+
+**The next session must NOT assume**
+
+- **...that the fail-safe protects anything yet.** It compiles and is wired in;
+  it has never caught a runaway and has never been shown not to misfire.
+- **...that `process_outputs()` energising implies `bed_control` approved.**
+  It did not, until this commit. `switch_driving` is now cleared at the start
+  of every press event, which is what makes the bypass unreachable.
+- **...that clearing `active_switch` is a safe thing for an error handler to
+  do.** It silently disables supervision.
+- **...that the double-press check is sound.** Its correctness still rests on
+  LED bits changing between latch and re-read, which is incidental rather than
+  designed. Only its flag lifecycle was fixed.
