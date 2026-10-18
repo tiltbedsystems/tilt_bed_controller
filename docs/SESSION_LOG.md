@@ -1280,3 +1280,44 @@ Closes the *means* to test #38's assumption A4. **It does not close A4.**
 - ...that DECISIONS #19 is the implementation record: #19 is the policy; #42 is the implementation (19 was taken).
 - ...that the 8-bond store rejects a 9th phone: per the SDK it pairs without storing a bond.
 - ...that STOP_ALL or anything other than a new BED LIGHTS press (or a reset) exits settings mode.
+
+## 2026-10-18 — Prompt W: bond store policy, close refused pairings, settings-mode holds
+
+**Commits**
+
+- `9798c5a` — docs only: Prompt V bench result as a dated "Bench result" note under DECISIONS #42 and a recorded-result table in REGRESSION.md §7; commits `docs/prompts/PROMPT_W_bonding-policy-reject-disconnect-settings-holds.md`.
+- `c6ee6b0` — B1 `sl_bt_sm_store_bonding_configuration(8, 2)` (store full -> overwrite the bond used longest ago; was 0); B2 a connection refused by the #42 window is recorded in `confirm_bonding` and closed with `sl_bt_connection_close()` on its `bonding_failed` (`BLE: closing conn=N - pairing refused`), record cleared on open/close, emptied at boot; B3 `handle=0x%02x` back in the confirm_bonding print; DECISIONS #43; BLE_GATT_DESIGN §8.
+- `840d7b8` — C1 `settings_mode_cancel_holds()` (stops 2 s/5 s timers, clears both flags), used by `settings_mode_exit()`; C2 `app_stop_all()` calls it in settings mode; C3 the UP_ALL/DOWN_ALL/AUTO_LEVEL release branches call it; C4 settings entry also needs `(switch_sampler_down() & SWITCH_BED_LIGHTS) != 0`.
+- `9ba0ca3` — docs: DECISIONS #19 "Implemented as #42", REFACTOR_PLAN P3.13 done (dd8d069), SWITCH_SAMPLER_DESIGN debounce-2 note. **D2 (CLAUDE.md) not done** — edit refused by the permission system; proposed diff in the handoff.
+- The handoff `docs/handoffs/fw_HANDOFF_2026-10-18_02_bonding-policy-refused-close-settings-holds.md` and this entry are committed together after these.
+
+**VERIFIED**
+
+- The user's Prompt V bench run (`PuTTY Logs/prompt_v_bench.log`, re-counted from the raw log): 88 accepted edges all `(bounces 0)`; 6 `presses ignored`, 3 of them followed by `Double Press Error`; no FAILSAFE, no `Unrecognized switch mask`; `Settings mode: exit` four times (lines 79, 86, 93, 171), each on one BED LIGHTS press; after the third exit every button's edges came through and a full auto-level completed; pairing (a) bonded reconnect with no confirm_bonding (142-148), (b) REJECTED -> `bonding_failed 0x1205` -> phone closed with `0x1013` (149-155), (c) ACCEPTED in settings mode -> bonded (162-169), (d) reconnect after exit with no confirm_bonding and app-driven motion (no `SW:` lines before the motor lines). The phone's `GATT_AUTH_FAIL` (status 137) message is the user's report — it is not in the PuTTY log.
+- SDK: policy 2 = "overwrite the bonding that was used the longest time ago" (`sl_bt_api.h:12074-12075`); `sl_bt_connection_close(uint8_t)` is asynchronous (`:8495-8515`); stack connection count is 4 (`config/sl_bluetooth_connection_config.h:38`); 0x1016 = terminated by local host (`sl_status.h:274`).
+- `app_stop_all()` has three callers (STOP_ALL `ble_bed_service.c:535`, watchdog expiry `:505`, control-disconnect `:883`), not only STOP_ALL as the prompt assumed.
+- Every build (baseline, after A, B, C, D) exited 0 with no warnings or errors. `BED_BENCH_PROVOKE_RUNAWAY` 0, `BLE_BENCH_WIPE_BONDS` 0.
+- `docs/MIGRATION_STATUS.md:51` still says Stage C "Not started" (stale vs DECISIONS #34).
+
+**ASSERTED-but-untested (nothing of B or C has run on the bench)**
+
+- That a refused phone is now closed by the bed (`closing conn`, `connection_closed reason=0x1016`) and still gets a clean pairing error first.
+- That policy 2 is accepted at boot and evicts the least recently used bond when full (eviction can't be exercised with 1-2 phones).
+- That STOP in settings mode leaves nothing stored, keeps settings mode, the amber blink resumes within ~0.4 s, and the next hold needs the full 2 s.
+- That C3 is equivalent to the old release branches apart from clearing stale flags; that C4 does not block a normal 5 s entry.
+
+**Open**
+
+- Bench: handoff b.5 E1 (pairing refused, now with `closing conn`), E2 (STOP during an UP ALL settings hold), E3 (entry/exit after C4).
+- CLAUDE.md "No BLE glue" line still stale — user to apply the diff in the handoff (b.4/c.5), ideally after MIGRATION_STATUS.md's Stage C status is corrected.
+- QUESTIONS for the reviewer (handoff f): C2 call site given three callers; REGRESSION.md has no pairing checklist items; handle table vs indexed flags; `closing conn` print gated by `BLE_DEBUG_SECURITY_LOG`; C4 without `switch_state_fresh()`; `Max Current` lines during the BED LIGHTS entry hold; 2 role slots vs 4 stack connections; user decision 3 not in DECISIONS.
+- `SWITCH_SAMPLER_DIAG` still 1 (pre-ship 0). `.projectlinkstore` still modified, never committed.
+
+**The next session must NOT assume**
+
+- ...that the refused-pairing close, policy 2, or the settings-mode hold fixes work: they build, nothing more.
+- ...that CLAUDE.md was updated: it was not (permission refusal), and the "No BLE glue" line is stale.
+- ...that MIGRATION_STATUS.md's BLE status is current: it says Stage C is not started; DECISIONS #34 and the code say it is built.
+- ...that `app_stop_all()` is STOP_ALL-only: it is also the watchdog-expiry and control-disconnect stop, and on all three it now cancels a settings hold when in settings mode.
+- ...that the phone-side GATT_AUTH_FAIL text came from the PuTTY log — it was reported by the user.
+- ...that the 8-bond store's current contents are known: bonds persist across reflashes and nobody has counted them.
