@@ -1888,3 +1888,46 @@ or `... -> REJECTED (not in settings mode)`.
 Builds clean from the command line. **Not run on the bench.** That a rejected
 phone sees a clean failure (rather than retrying or hanging) is the SDK's
 documented behaviour for confirm = 0, not observed here.
+
+### Bench result (2026-10-18)
+
+The user ran `944f19e` (Prompt V: debounce 2 samples, settings-mode exit,
+pairing window; `BLE_DEBUG_SECURITY_LOG` 1) on the bed with the Flutter app
+on a Samsung S10. Log: `_03-Software/PuTTY Logs/prompt_v_bench.log` (193
+lines). Every figure below was re-counted from that log. **VERIFIED (user's
+bench run).**
+
+- **Debounce 2:** 88 accepted edges, all `(bounces 0)`. Six two-button
+  episodes, all printed `SW: 2 switches down - presses ignored`; three of
+  them also printed `Double Press Error` (as designed - one press delivered
+  first, then stopped). No `FAILSAFE`, no `Unrecognized switch mask`.
+- **Settings mode exit:** `Settings mode: exit` printed four times (log
+  lines 79, 86, 93, 171), each on a single new BED LIGHTS press. After the
+  third exit every button's press and release came through, and a full
+  auto-level ran to `PITCH Leveled successfully` / `Exit auto-level`. The
+  log shows the other presses' edges but no motor-current lines for them
+  (those print only after ~300 ms of running), so "every button worked" is
+  the user's observation, not something the log alone shows.
+- **Pairing window:**
+  - (a) bonded phone reconnecting (lines 142-148): `connection_opened
+    bonding=0x01`, `security_mode=1`, no `confirm_bonding` line.
+  - (b) phone-side bond deleted, not in settings mode (lines 149-155):
+    `confirm_bonding conn=2 (REPLACING existing bond) -> REJECTED (not in
+    settings mode)`, `bonding_failed conn=2 reason=0x1205`, then
+    `connection_closed conn=2 reason=0x1013` - the phone closed the link
+    itself; the firmware did not.
+  - (c) in settings mode (lines 162-169): `-> ACCEPTED (settings mode)`,
+    then `bonded conn=3`.
+  - (d) after the exit (line 171) the phone reconnected (lines 176-181,
+    `bonding=0x01`, `security_mode=1`) with no `confirm_bonding` line, and
+    the motor-current lines that follow with no `SW:` line before them are
+    app-driven movement.
+- **Phone side** (reported by the user from the phone's screen, not in the
+  PuTTY log): the app showed `Connection failed: ... status 137
+  (GATT_AUTH_FAIL), type ... CHARACTERISTIC_READ` for (b). So the refused
+  phone gets a clean failure, not a hang - observed with this phone and app
+  only.
+
+That the Android app closed the link after the rejection is that app's
+behaviour, not the firmware's. Prompt W part B (recorded as #43, below)
+makes the firmware close it.

@@ -237,6 +237,19 @@ pitch, all actuators clear of limits.
 - [ ] ⚡ BLE link stays up (no disconnect) through settings mode entry,
       zero-level store/erase, and sensitivity adjustment
 
+**Recorded result, 2026-10-18 (firmware `944f19e`, debounce 2 samples,
+log `prompt_v_bench.log`; full figures in DECISIONS #42 "Bench result").**
+This section has no pairing-window checklist item yet; the pairing rows
+below record the DECISIONS #42 checks the user ran alongside 7.9.
+
+| Item | Result |
+|---|---|
+| 7.9 | `Settings mode: exit` four times, each on one new BED LIGHTS press; afterwards every button's press and release came through and a full auto-level completed |
+| Pairing, bonded phone reconnects | no `confirm_bonding` line, reached `security_mode=1` (before and after a settings-mode session) |
+| Pairing refused (phone bond deleted, not in settings mode) | `-> REJECTED (not in settings mode)`, `bonding_failed reason=0x1205`, then the phone closed the link (`connection_closed reason=0x1013`); phone showed `GATT_AUTH_FAIL` (status 137) |
+| Pairing in settings mode | `-> ACCEPTED (settings mode)`, then `bonded` |
+| 7.1-7.8, BLE link item | not separately recorded |
+
 ## 8. Bed lights
 
 - [ ] ⚡ Tap BED_LIGHTS: under-bed lighting on, amber LED on
