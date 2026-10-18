@@ -1202,3 +1202,41 @@ Closes the *means* to test #38's assumption A4. **It does not close A4.**
 
 - ...that this session reviewed or touched the two uncommitted paths above.
 - ...that anything about firmware behaviour was learned here.
+
+## 2026-10-17 — switch sampler implemented (one switch reader, DECISIONS #41)
+
+**Commits**
+
+- `d1f13d0` — One switch reader: only the new sampler (switch_input.c) reads the UI input ports via `ui_read_inputs()`; 10 ms sampling with 3-sample debounce; edges delivered one bit at a time, releases first, no presses while 2+ down; re-driver reference count (`ui_redriver_acquire/release`); motor-enable shadow (`motor_outputs_maybe_on()`); sleep vetoed by sampler activity and the shadow; fail-safe and double-press check use the debounced state; DECISIONS #41; adds `docs/SWITCH_SAMPLER_DESIGN.md`.
+- The handoff file `docs/handoffs/fw_HANDOFF_2026-10-17_05_one-switch-reader-sampler.md` and this entry are committed together after it.
+
+**VERIFIED**
+
+- Builds from the command line with no warnings and no errors: flag 0, flag 1 (compile check), and a final flag-0 rebuild. Raw output is in the handoff, d.3.
+- `BED_BENCH_PROVOKE_RUNAWAY` is 0 in the committed source (`switch_input.c:98`); the last image in `cmake_gcc/build/` is the flag-0 one.
+- The design's §3a greps pass: `EXP_CMD_READ_INPUTS` is issued only inside `ui_read_inputs()`, which is called only from the sampler; none of the removed names remain in `.c/.h`; the re-driver is switched only by acquire/release.
+- Every port-0 writer in `exp_board.c` updates the motor-enable shadow (grep in the handoff).
+- Every sleeptimer callback found in the firmware only sets a flag; `sl_button_on_change` is flag-only.
+- Both I2C buses are standard mode, 100 kbit/s (`config/sl_i2c*_config.h:49`).
+
+**ASSERTED-but-untested (nothing was run on the bench)**
+
+- All behaviour: that two-button presses/releases now work, that the fail-safe no longer trips on a normal release, that the debounce values are right, that the shadow/sleep veto removes the ALL-MOTORS slowness, that BED LIGHTS settings entry still works.
+- That `SL_SIMPLE_BUTTON_PRESSED` means UI_INT low and low means asserted (kept from the old code; not checked against the schematic).
+- The §3c blocking-time table is arithmetic from a 100 kHz byte-time model, not a measurement.
+- That nothing calls the re-driver from a non-main-loop context: timer callbacks verified by grep; BLE dispatch context taken from a comment; the ADC ISR was not inspected.
+
+**Open**
+
+- The bench checklist in the handoff (b.12) needs turning into steps and running: single press, two-button press and release, second press during a move, BED LIGHTS 5 s, the provoked runaway with the flag hand-flipped to 1 (and back to 0).
+- Decisions for the reviewer, listed in the handoff under QUESTIONS FOR REVIEW: the PRESSED gate on `sl_button_on_change`, the read-failure counting rule, release latency (~20-30 ms added by the debounce), behaviour on a bench with no UI boards or a stuck UI_INT, `SWITCH_SAMPLER_DIAG` left at 1 (set 0 pre-ship).
+- Not traced: whether the double-press path leaves the bed_control switch latch set (it does not call `bed_note_source_released`); `bed_actions.c` still includes `switch_input.h` unused.
+- `.projectlinkstore` is still modified and uncommitted (the design says never commit it).
+
+**The next session must NOT assume**
+
+- ...that the sampler works: it builds, nothing more.
+- ...that the repo state matched the design's §0: HEAD was `cb9c7b2`, level with `origin/main` (the earlier status-check task had committed and pushed), not `6b35be8` three ahead.
+- ...that the old #40 "recovered swallowed switch change" explanation was confirmed: that mechanism is deleted, and whether the swallow hypothesis was right is still unproven either way.
+- ...that the 271-307 ms vs 214-223 ms figures or the "CPU sleeping between samples" cause were observed by this session: they are the design's numbers and inference.
+- ...that the flag-1 build is harmless: it must never be left on the bed.
