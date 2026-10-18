@@ -1122,3 +1122,28 @@ Closes the *means* to test #38's assumption A4. **It does not close A4.**
   motor pair every time UP HEAD or UP ALL is tapped.
 - **...that a clean `git diff` on `switch_input.c` was checked automatically.**
   Nothing enforces the flag being off except reading it.
+
+## 2026-10-17 — git housekeeping, first push in over two months
+
+**Commits**
+
+- `de48e7f` — CLAUDE.md: standing rule to push to origin/main at end of every session.
+
+**VERIFIED**
+
+- origin/main had 0 commits not in local; local was 40 ahead; no divergence.
+- `git push` succeeded (6dcb262..de48e7f), exit 0; status then said up to date.
+
+**ASSERTED**
+
+- Nothing beyond the above; no source touched, no bench work.
+
+**Open**
+
+- Decide whether `.projectlinkstore` (tracked, dirty), `.projectchecksums` and `tilt_bed_controller_project.pdf` belong in .gitignore. Recommended yes; left untouched.
+- All firmware items from 2026-08-05 #03 remain open, notably running the fail-safe provocation.
+
+**The next session must NOT assume**
+
+- ...that the fail-safe is proven; this session did nothing to that.
+- ...that pushing is optional: CLAUDE.md now requires it, never forced.
