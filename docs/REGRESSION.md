@@ -102,6 +102,58 @@ wired to the correct physical actuators.
 - [ ] After releasing both, a single button press works normally
 - [ ] Repeat with an UP + a DOWN button combination
 
+## 3b. Switch sampler (DECISIONS #41)
+
+The one-switch-reader sampler (`switch_input.c`). Build with
+`SWITCH_SAMPLER_DIAG 1` so the `SW:` lines print, and
+`BED_BENCH_PROVOKE_RUNAWAY 0` except for 3b.5. The bounce count in
+`(bounces N)` is whatever the switch does (0 for a clean contact).
+
+- [ ] 3b.1 Single press and release (e.g. UP HEAD, mask 0x8000), about 1 s
+      hold: `SW: 0x8000 down (bounces 0)` ~20-30 ms after pressing and the
+      motor moves; `SW: 0x8000 up (bounces 0)` ~20-30 ms after releasing and
+      the motor stops. No `FAILSAFE:`, no `Double Press Error`, no
+      `Unrecognized switch mask`, no `SW: ... failed`.
+- [ ] 3b.2 Two buttons pressed together from idle (e.g. UP HEAD + UP LEFT,
+      0x8000 and 0x4000): `SW: 0x4000 down`, then `SW: 0x8000 down` (lowest
+      bit first), then `SW: 2 switches down - presses ignored`. No motor
+      moves, no `Double Press Error`. On release two `SW: 0x.... up` lines and
+      no `FAILSAFE:`.
+- [ ] 3b.3 Second button pressed while the first is held and moving:
+      `SW: 0xXXXX down` for the second, `SW: 2 switches down - presses
+      ignored`, then `Double Press Error` and `  down mask 0xC000, 2 switches
+      down` (for HEAD+LEFT); motors stop. Both releases print `SW: ... up`; no
+      `FAILSAFE:`.
+- [ ] 3b.4 BED LIGHTS held 5 s (mask 0x0008): `SW: 0x0008 down` at the press,
+      the lights toggle and settings mode is entered at 5 s as in section 7,
+      `SW: 0x0008 up` on release. No `Unrecognized switch mask`, no
+      `FAILSAFE:`.
+- [ ] 3b.5 Provoked runaway (`BED_BENCH_PROVOKE_RUNAWAY` hand-flipped to 1,
+      and back to 0 afterwards). Tap UP HEAD: `SW: 0x8000 down`,
+      `SW: 0x8000 up`, ~300 ms later `PROVOKE: energised HEAD pair with
+      nothing commanding - fail-safe should stop this`, then `FAILSAFE: motors
+      energised with nothing commanding - stopped`, then `PROVOKE: fail-safe
+      caught it after N ms`. Tap UP ALL (0x0001): the same with
+      `ALL MOTORS`; N should be close to the HEAD-pair figure. Repeat several
+      times; there must be no `FAILSAFE:` without a `PROVOKE:` just before it.
+- [ ] 3b.6 Power-up with a button held: no `SW:` line and no motion at boot;
+      the later release prints `SW: ... up` and does nothing; the next press
+      works.
+- [ ] 3b.7 Idle: no `SW:` lines at all with no button touched.
+
+**Recorded result, 2026-10-18 (firmware `d1f13d0`, debounce 3 samples,
+log `sampler_bench.log`; full figures in DECISIONS #41 "Bench result"):**
+
+| Item | Result |
+|---|---|
+| 3b.1 | ~700 accepted edges, no `FAILSAFE:` outside a provocation, no `Unrecognized switch mask`, no `read failed` |
+| 3b.2 / 3b.3 | 67 two-button episodes across 30 pairs: all printed `presses ignored`; 57 also printed `Double Press Error` (one press had been delivered first, brief start, then stop); 10 moved nothing; every release came through |
+| Bounce | 696 edges with 0 bounces, 4 with 1 |
+| 3b.5 HEAD | caught after 209, 248, 209, 209, 209 ms |
+| 3b.5 ALL | caught after 209, 210, 210, 217, 249 ms (was 271-307 ms before the sleep veto) |
+| 3b.6 | UP HEAD held through reset: no motion; release printed `SW: 0x8000 up (bounces 0)`; next press worked |
+| 3b.4, 3b.7 | not separately recorded |
+
 ## 4. Limit switch inference
 
 - [ ] Drive one side UP until the actuators reach their physical upper limit:
@@ -202,6 +254,7 @@ pitch, all actuators clear of limits.
 | 1 Power-on | | |
 | 2 Manual control | | |
 | 3 Double-press | | |
+| 3b Switch sampler | | |
 | 4 Limit switches | | |
 | 5 Collision | | |
 | 6 Auto-level | | |

@@ -1803,3 +1803,35 @@ Builds clean (no warnings, no errors) from the command line with
 `BED_BENCH_PROVOKE_RUNAWAY` at 0. **None of this has been run on the bench.**
 DECISIONS.md #40's "recovered swallowed switch change" mechanism is removed;
 whether the swallow hypothesis was right is unproven either way.
+
+### Bench result (2026-10-18)
+
+The user ran `d1f13d0` on the bed (debounce 3 samples, `SWITCH_SAMPLER_DIAG`
+1, the provocation flag hand-flipped to 1 for the runaway runs and back).
+Log: `_03-Software/PuTTY Logs/sampler_bench.log` (1155 lines). Every figure
+below was re-counted from that log, not copied from a summary. **VERIFIED
+(user's bench run).**
+
+- **Provoked runaway, HEAD pair:** caught after 209, 248, 209, 209, 209 ms.
+- **Provoked runaway, ALL MOTORS:** caught after 209, 210, 210, 217, 249 ms.
+  Before the sleep veto this was 271-307 ms against 214-223 ms for the HEAD
+  pair; the gap is gone. That is consistent with the "CPU slept between
+  fail-safe samples" explanation above; it does not prove it was the only
+  cause.
+- Every `FAILSAFE:` line (10) comes directly after a `PROVOKE:` line. No
+  `Unrecognized switch mask`, no `read failed`, no other `failed` line.
+- **Two-button presses:** 67 episodes with two switches down, across 30
+  different pairs. All 67 printed `SW: 2 switches down - presses ignored`; in
+  57 of them one button's press had already been delivered (a brief start)
+  and `Double Press Error` followed and stopped it; the other 10 moved
+  nothing. Every release came through: each `down` line has a matching `up`,
+  and no episode ended with a switch left down.
+- **Bounce tally:** 700 accepted edges (350 down, 350 up); 696 with 0 bounces,
+  4 with 1 bounce (one on 0x1000, three on 0x0004, all on press).
+- **Power-up with UP HEAD held:** the board was reset with 0x8000 down; after
+  the boot lines the only output was `SW: 0x8000 up (bounces 0)`, with no
+  motor-current lines (nothing moved); the next press of UP HEAD moved the
+  bed normally.
+
+The bounce data is the basis for reducing the debounce to 2 samples
+(2026-10-18, user decision): no bounce lasted more than one sample.
