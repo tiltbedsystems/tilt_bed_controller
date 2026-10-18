@@ -1837,3 +1837,54 @@ below was re-counted from that log, not copied from a summary. **VERIFIED
 
 The bounce data is the basis for reducing the debounce to 2 samples
 (2026-10-18, user decision): no bounce lasted more than one sample.
+
+## 42. Pairing window: new bonds only while settings mode is active (implements #19)
+
+Date: 2026-10-18. User decision. This implements `docs/BLE_GATT_DESIGN.md`
+§8's "proposed DECISIONS #19". Number 19 was already used - by #19 above,
+which recorded this same policy but was never built - so the implementation
+is recorded here, as #42.
+
+### Decision (user decisions - not to be re-opened)
+
+1. **Only new bonds are gated.** An already-bonded phone reconnects freely at
+   any time. A reconnecting bonded phone resumes encryption from its stored
+   bond and does not raise `sl_bt_evt_sm_confirm_bonding`, so the gate never
+   sees it. Evidence: the SDK documents the event as a "new bonding request"
+   (`sl_bt_api.h`, `sl_bt_evt_sm_confirm_bonding`), the existing code already
+   relies on `sm_bonded` not firing for a resumed bond (`assign_role_if_needed`
+   comment), and in the 2026-10-18 bench log (`sampler_bench.log` lines
+   956-961 and 979-984, built with `BLE_DEBUG_SECURITY_LOG` 1) a bonded phone
+   (`connection_opened ... bonding=0x01`) reconnected twice and reached
+   `security_mode=1` with no `confirm_bonding` line.
+2. **Re-pairing a known phone is gated too.** A replacement request
+   (`bonding_handle != SL_BT_INVALID_BONDING_HANDLE`) goes through the same
+   window. **This changes #28's auto-replace from automatic to conditional:**
+   a stale-bond phone is still recoverable without a reflash, but only by
+   putting the bed into settings mode and pairing again. #28's security
+   analysis anticipated exactly this ("once #19 gates all bonding - new and
+   replace alike - behind a physically-opened pairing window, auto-replace is
+   safe by construction").
+3. **The window is "while settings mode is active" - no timer.** It opens when
+   settings mode is entered (BED LIGHTS held 5 s) and closes on the settings
+   mode exit (a new BED LIGHTS press, `settings_mode_exit()`) and on reset
+   (`in_settings_mode` starts false).
+4. **Outside the window, reject** with `sl_bt_sm_bonding_confirm(conn, 0)`,
+   so the phone gets a clean pairing failure rather than a hang.
+
+### Implementation
+
+One decision point, as #28 planned: the `sl_bt_evt_sm_confirm_bonding`
+handler in `ble_bed_service.c` now passes
+`confirm = app_in_settings_mode() ? 1 : 0` to `sl_bt_sm_bonding_confirm()`
+instead of always 1. `sl_bt_sm_set_bondable_mode(1)` and the configuration
+bits are unchanged. Under `BLE_DEBUG_SECURITY_LOG` the handler prints, for
+every request,
+`BLE SM: confirm_bonding conn=N (new bond|REPLACING existing bond) -> ACCEPTED (settings mode)`
+or `... -> REJECTED (not in settings mode)`.
+
+### Status
+
+Builds clean from the command line. **Not run on the bench.** That a rejected
+phone sees a clean failure (rather than retrying or hanging) is the SDK's
+documented behaviour for confirm = 0, not observed here.

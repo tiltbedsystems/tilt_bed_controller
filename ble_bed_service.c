@@ -872,10 +872,12 @@ void ble_bed_service_on_event(sl_bt_msg_t *evt)
       // Bonded + encrypted, Just Works (no MITM claim - no display/passkey
       // entry hardware), LE Secure Connections only (BLE_GATT_DESIGN.md #8).
       // Bit 3 (BONDING_REQUEST_REQUIRED) is set so sl_bt_evt_sm_confirm_bonding
-      // fires and the app decides whether to allow a re-pair against an
-      // existing bond, instead of the stack auto-rejecting it (bench-
+      // fires for every bonding request and the app decides it, instead of
+      // the stack auto-rejecting a re-pair against an existing bond (bench-
       // confirmed 0x1205 SMP_PAIRING_NOT_SUPPORTED with this bit clear -
-      // DECISIONS.md #28, auto-replace fix for the stale-bond lockout bug).
+      // DECISIONS.md #28). That handler is the pairing window (DECISIONS.md
+      // #42): new bonds and replacements alike are accepted only while
+      // settings mode is active.
       sc = sl_bt_sm_configure(SL_BT_SM_CONFIGURATION_BONDING_REQUIRED
                                | SL_BT_SM_CONFIGURATION_SC_ONLY
                                | SL_BT_SM_CONFIGURATION_BONDING_REQUEST_REQUIRED,
@@ -889,9 +891,10 @@ void ble_bed_service_on_event(sl_bt_msg_t *evt)
       app_assert_status(sc);
       printf("BLE SM: store_bonding_configuration -> 0x%04x\r\n", (unsigned)sc);
 
-      // Bondable at all times for now - DECISIONS.md #19's physical
-      // pairing-window gate (settings-mode-only bonding) is a later,
-      // separately-approved step, not part of bring-up.
+      // Bondable at all times at the stack level. The physical pairing
+      // window (settings-mode-only bonding, DECISIONS.md #19/#42) is enforced
+      // per request in the sl_bt_evt_sm_confirm_bonding handler below - one
+      // decision point, not a second mechanism here.
       sc = sl_bt_sm_set_bondable_mode(1);
       app_assert_status(sc);
       printf("BLE SM: set_bondable_mode(1) -> 0x%04x\r\n", (unsigned)sc);
@@ -992,19 +995,24 @@ void ble_bed_service_on_event(sl_bt_msg_t *evt)
     // security risk"). Logged so a replace vs. a new bond is visible on the
     // bench.
     //
-    // Today: always confirm - no gate here yet. This is the single decision
-    // point for DECISIONS.md #19's still-unbuilt physical pairing window:
-    // when #19 lands, this becomes "confirm only if the pairing window is
-    // open, reject otherwise" (sl_bt_sm_bonding_confirm(cb->connection, 0)
-    // on the reject path) - not a second mechanism bolted on elsewhere.
+    // THE PAIRING WINDOW (DECISIONS.md #42, implementing #19): confirm only
+    // while settings mode is active on the switch panel, reject otherwise.
+    // New bonds and replacements of an existing bond go through the same
+    // window, so #28's auto-replace now happens only inside it. An
+    // already-bonded phone reconnecting resumes encryption from its stored
+    // bond and never raises this event, so it is not affected. The window
+    // closes on settings_mode_exit() and on reset. Rejecting (0) rather than
+    // ignoring the event gives the phone a clean pairing failure, not a hang.
     case sl_bt_evt_sm_confirm_bonding_id: {
       const sl_bt_evt_sm_confirm_bonding_t *cb = &evt->data.evt_sm_confirm_bonding;
+      uint8_t confirm = app_in_settings_mode() ? 1 : 0;
 #if BLE_DEBUG_SECURITY_LOG
-      printf("BLE SM: confirm_bonding conn=%u bonding_handle=0x%02x (%s, auto-confirming)\r\n",
-             cb->connection, cb->bonding_handle,
-             (cb->bonding_handle == SL_BT_INVALID_BONDING_HANDLE) ? "new bond" : "REPLACING existing bond");
+      printf("BLE SM: confirm_bonding conn=%u (%s) -> %s\r\n",
+             cb->connection,
+             (cb->bonding_handle == SL_BT_INVALID_BONDING_HANDLE) ? "new bond" : "REPLACING existing bond",
+             confirm ? "ACCEPTED (settings mode)" : "REJECTED (not in settings mode)");
 #endif
-      sl_bt_sm_bonding_confirm(cb->connection, 1);
+      sl_bt_sm_bonding_confirm(cb->connection, confirm);
       break;
     }
 

@@ -346,9 +346,11 @@ connection to gain control, which reads as a bug.
 no MITM claim; acceptable threat model for a vehicle interior). All
 characteristics require encryption + bonding. **New bonds are accepted only
 during a physical pairing window: while settings mode is active on the
-switch panel** (proposed DECISIONS #19). Outside the window,
-pairing/bonding requests are rejected, so a stranger within radio range
-cannot enroll. Store 8 bonds in NVM3.
+switch panel** (DECISIONS #19, implemented as DECISIONS #42). Outside the
+window, pairing/bonding requests are rejected, so a stranger within radio
+range cannot enroll. Re-pairing a phone that already has a bond is gated the
+same way; a bonded phone reconnecting is not affected. Store 8 bonds in
+NVM3.
 
 **Advertising (fast-connect lever #1).** The board is powered from the van
 battery bank — coin-cell advertising economics do not apply. Advertise

@@ -113,7 +113,8 @@ void settings_mode_cancel_entry(void)
 
 // Leaves settings mode and returns the panel to a clean normal-mode idle.
 // Triggered by a NEW press of BED LIGHTS while in settings mode (see
-// settings_mode_process_outputs()).
+// settings_mode_process_outputs()). Also closes the BLE pairing window, which
+// is simply "in_settings_mode is true" (DECISIONS.md #42).
 void settings_mode_exit(void)
 {
   in_settings_mode = false;
