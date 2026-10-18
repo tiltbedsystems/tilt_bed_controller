@@ -1147,3 +1147,34 @@ Closes the *means* to test #38's assumption A4. **It does not close A4.**
 
 - ...that the fail-safe is proven; this session did nothing to that.
 - ...that pushing is optional: CLAUDE.md now requires it, never forced.
+
+## 2026-10-17 — provocation results: fail-safe blind to ALL, double-press misfires, swallowed switch events
+
+**Commits**
+
+- `3f0d409` — fail-safe reads motor enables from hardware; double press = two switches down; swallowed-event recovery; DECISIONS #40. Bench flag committed as 0.
+
+**VERIFIED**
+
+- Bench log (read in full): HEAD provocation caught 11/11 (213-216 ms); ALL provocation caught 0/5.
+- `set_all_motors_on()` sets no `motor_state[]` flags, so the old flag-based check could not see it (code).
+- PWM is started once and never stopped (`app.c:414-417`); no debounce exists in firmware (grep).
+- Builds clean with the flag at 0 and at 1.
+
+**ASSERTED (not run on the bench)**
+
+- That the fail-safe now catches the ALL provocation.
+- That reading the input port clears the expander's interrupt source, so out-of-band reads can swallow a release; basis is a code comment (`exp_ui.c:263`), not the datasheet. This is my explanation for the unprovoked `FAILSAFE:` and possibly the original runaway.
+- That bounce and the auto-level exit are the false double-press causes.
+
+**Open**
+
+- Run the bench acceptance in `fw_HANDOFF_2026-10-17_02_*`. Watch for `UI: recovered swallowed switch change`: if it never appears the swallow hypothesis is wrong.
+- No debounce on the main input path (a bounce can still cause a brief stop/restart).
+- Which board the physical controller is (`ui_int_source` handling); `SWITCH_INPUT_MASK` vs schematic; ungate supervision from `active_switch`; Release-config pass; loop-rate measurement.
+
+**The next session must NOT assume**
+
+- ...that the unprovoked trip is explained: it is inferred, not observed.
+- ...that the fail-safe is proven for ALL moves until the bench says so.
+- ...that the provocation flag is off on the bed; check `switch_input.c:91` and `git diff --stat`.
