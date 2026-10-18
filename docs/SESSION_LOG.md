@@ -1178,3 +1178,27 @@ Closes the *means* to test #38's assumption A4. **It does not close A4.**
 - ...that the unprovoked trip is explained: it is inferred, not observed.
 - ...that the fail-safe is proven for ALL moves until the bench says so.
 - ...that the provocation flag is off on the bed; check `switch_input.c:91` and `git diff --stat`.
+
+## 2026-10-17 — status check only (git status / git log), nothing changed
+
+**Commits**
+
+- None. HEAD stayed at `6b35be8` (Handoff 03: note session was interrupted before section (b)).
+
+**VERIFIED**
+
+- `git status` and `git log --oneline -3` were run and their output is in `fw_HANDOFF_2026-10-17_04_status-check-only.md`: branch `main`, 3 commits ahead of `origin/main`, `.projectlinkstore` modified (unstaged), `docs/SWITCH_SAMPLER_DESIGN.md` untracked.
+
+**ASSERTED-but-untested**
+
+- Nothing. No source was touched, so there is nothing to build or bench-test.
+
+**Open**
+
+- `.projectlinkstore` is still dirty and `docs/SWITCH_SAMPLER_DESIGN.md` is still untracked. This session neither committed nor discarded them; they are not mine.
+- Everything open in the earlier 2026-10-17 entries is unchanged (bench acceptance of the fail-safe fix, single-switch sampler plan review).
+
+**The next session must NOT assume**
+
+- ...that this session reviewed or touched the two uncommitted paths above.
+- ...that anything about firmware behaviour was learned here.
