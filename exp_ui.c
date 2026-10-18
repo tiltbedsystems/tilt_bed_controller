@@ -19,15 +19,16 @@
  ******************************************************************************/
 
 #define UI_I2C_DEVICE               (sl_i2cspm_off_board)
-#define UI_AUX_I2C_BUS_ADDRESS      0x20 // Aux Board
-#define UI_SWITCH_I2C_BUS_ADDRESS   0x21 // Switch Board
+// UI_AUX_I2C_BUS_ADDRESS / UI_SWITCH_I2C_BUS_ADDRESS live in exp_ui.h.
 
 /*******************************************************************************
  ***************************  GLOBAL VARIABLES   ********************************
  ******************************************************************************/
 
 static uint8_t ui_target;
-static uint8_t ui_int_source;
+
+// Number of holders of the off-board bus re-drivers (see ui_redriver_acquire()).
+static uint8_t redriver_holds = 0;
 
 bool LED_state_on[NUM_LEDS] = {false}; // Declared extern in exp_ui.h to use in app.c as well
 
@@ -77,41 +78,17 @@ static I2C_TransferReturn_TypeDef ui_transaction(uint16_t flag,
       return i2cTransferUsageFault;
   }
 
-  // Re-driver on/off time is < 100 nsec, but supply load switch needs 2 msec
-  set_I2C_redriver_on();
-  sl_sleeptimer_delay_millisecond(2);
+  // Re-driver power ON for the duration of this transfer. A no-op (no toggle,
+  // no delay) if the switch sampler is already holding it for a session.
+  ui_redriver_acquire();
 
   // Perform the transfer and return status from the transfer
   ret = I2CSPM_Transfer(UI_I2C_DEVICE, &seq);
 
-  // Turn re-driver/power OFF
-  set_I2C_redriver_off();
+  // Turn re-driver/power OFF, unless something else still holds it
+  ui_redriver_release();
 
   return ret;
-}
-
-static uint16_t get_ui_interrupts()
-{
-  I2C_TransferReturn_TypeDef ret;
-  uint8_t cmd;
-  uint8_t ports[2];
-  uint16_t interrupt;
-
-  // Read GPIO IC's internal interrupt source flags
-  cmd = EXP_CMD_READ_INTERRUPTS;
-  ret = ui_transaction(I2C_FLAG_WRITE_READ, &cmd, 1, &ports[0], 2);
-  // EFM_ASSERT(ret == i2cTransferDone);
-  if (ret != i2cTransferDone) { // Other board or not connected
-      ports[0] = 0;
-      ports[1] = 0;
-  }
-
-  // Save Port 0 and Port 1 into packed variable - 1's are interrupt source(s)
-  // Maybe atomic load/store, but almost certainly OK with current design
-  interrupt = ((uint16_t) (ports[0] << 8)) | ports[1];
-
-  // Return for processing by switch decode function
-  return interrupt;
 }
 
 static void set_LEDs_on(led_color_t LED_color)
@@ -231,48 +208,45 @@ static void init_ui_expanders()
  **************************   GLOBAL FUNCTIONS   *******************************
  ******************************************************************************/
 
-uint16_t get_ui_interrupt()
+void ui_redriver_acquire(void)
 {
-  uint16_t ui_interrupt;
-
-  // Read interrupt register from Auxiliary board
-  ui_target = UI_AUX_I2C_BUS_ADDRESS;
-  ui_int_source = ui_target;
-  ui_interrupt = get_ui_interrupts();
-
-  if(ui_interrupt == 0){ // No Auxiliary board interrupts, so from Switch board
-      ui_target = UI_SWITCH_I2C_BUS_ADDRESS;
-      ui_int_source = ui_target;
-      ui_interrupt = get_ui_interrupts();
+  if (redriver_holds == 0) {
+    // Re-driver on/off time is < 100 nsec, but supply load switch needs 2 msec
+    set_I2C_redriver_on();
+    sl_sleeptimer_delay_millisecond(2);
   }
-
-  // Return for processing by switch decode function
-  return ui_interrupt;
+  redriver_holds++;
 }
 
-uint16_t get_ui_status()
+void ui_redriver_release(void)
+{
+  if (redriver_holds > 0) {
+    redriver_holds--;
+    if (redriver_holds == 0) {
+      // Turn re-driver/power OFF
+      set_I2C_redriver_off();
+    }
+  }
+}
+
+// The only place in the firmware that issues EXP_CMD_READ_INPUTS to a UI board.
+// Reading the input ports clears the expander's interrupt flag, which is why
+// there must be exactly one reader (DECISIONS.md #41).
+bool ui_read_inputs(uint8_t board_addr, uint16_t *status)
 {
   I2C_TransferReturn_TypeDef ret;
-  uint8_t cmd;
-  uint8_t ports[2];
-  uint16_t ui_status;
+  uint8_t cmd = EXP_CMD_READ_INPUTS;
+  uint8_t ports[2] = {0, 0};
 
-  // Set register read of the GPIO expander that triggered the interrupt
-  ui_target = ui_int_source;
-
-  // Read of port state inputs clears GPIO IC's internal interrupt flag
-  cmd = EXP_CMD_READ_INPUTS;
+  ui_target = board_addr;
   ret = ui_transaction(I2C_FLAG_WRITE_READ, &cmd, 1, &ports[0], 2);
-  //EFM_ASSERT(ret == i2cTransferDone);
-  (void)ret;
+  if (ret != i2cTransferDone) { // Other board or not connected
+    return false;
+  }
 
-  // Save freshly read Port 0 and Port 1 into a packed status variable
-  // Maybe atomic load/store, but almost certainly OK with current design
-
-  ui_status = ((uint16_t) (ports[0] << 8)) | ports[1];
-
-  // Return for processing by motor controls
-  return ui_status;
+  // Pack Port 0 and Port 1: switches are active low (1 = released)
+  *status = ((uint16_t) (ports[0] << 8)) | ports[1];
+  return true;
 }
 
 void set_LED_on(led_color_t LED_color)

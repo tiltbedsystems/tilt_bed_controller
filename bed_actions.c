@@ -54,7 +54,6 @@ static void motor_button_pressed(active_switch_t switch_value, side_of_bed_t sid
       reset_ignore_data_points_count();
       reset_motor_current_data();
   }
-  app_reset_double_press_timer();
 }
 
 // Shared handling for a single-side motor button release
@@ -67,7 +66,6 @@ static void motor_button_released(void)
       reset_ignore_data_points_count();
       reset_motor_current_data();
   }
-  app_reset_double_press_timer();
 }
 
 // Shared handling for an all-motors (UP_ALL/DOWN_ALL) button press
@@ -92,7 +90,6 @@ static void all_motors_button_pressed(bool up)
   set_motors_off_once = false;
   temp_motor_off_timer_timeout = false;
   motors_temp_off = false;
-  app_reset_double_press_timer();
 }
 
 // Shared handling for an all-motors (UP_ALL/DOWN_ALL) button release
@@ -109,7 +106,6 @@ static void all_motors_button_released(void)
   set_motors_off_once = false;
   temp_motor_off_timer_timeout = false;
   motors_temp_off = false;
-  app_reset_double_press_timer();
 }
 
 void app_move_start(bed_target_t target, bed_direction_t dir)
@@ -181,7 +177,6 @@ void app_auto_level_start(void)
       reset_ignore_data_points_count();
       reset_motor_current_data();
   }
-  app_reset_double_press_timer();
 }
 
 void app_auto_level_stop(void)
@@ -198,7 +193,6 @@ void app_auto_level_stop(void)
       reset_ignore_data_points_count();
       reset_motor_current_data();
   }
-  app_reset_double_press_timer();
 }
 
 void app_lights_set(bool on)
@@ -206,7 +200,6 @@ void app_lights_set(bool on)
   active_switch = SWITCH_BED_LIGHT_VALUE;
   initial_switch_press = true;
   bedlights_on = on;
-  app_reset_double_press_timer();
 }
 
 // Full clean stop: whichever of auto-level or movement was active gets its

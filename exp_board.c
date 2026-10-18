@@ -38,6 +38,14 @@
 static uint8_t cached_motor_faults = 0;
 static uint32_t last_fault_sample_tick = 0;
 
+// Shadow of the motor ENABLE bits (P0_0-P0_3) of the on-board expander's output
+// register, as last written by this file. Lets app_is_ok_to_sleep() ask "might
+// the hardware be driving a motor?" without an I2C read. Starts at 0x0F
+// (unknown at boot = assume energised) until init_board_expander() writes the
+// port; set to 0x0F again whenever a port-0 write fails. Port 0 is written
+// ONLY from this file - every writer below updates the shadow (DECISIONS.md #41).
+static uint8_t motor_enable_shadow = 0x0F;
+
 /*******************************************************************************
  *********************   LOCAL FUNCTION PROTOTYPES   ***************************
  ******************************************************************************/
@@ -90,6 +98,13 @@ static I2C_TransferReturn_TypeDef board_exp_transaction(uint16_t flag,
   return ret;
 }
 
+// Records the outcome of a port-0 (EXP_CMD_OUTPUT) write in the shadow: on
+// success the enable bits that were written, on failure unknown = energised.
+static void note_port0_write(I2C_TransferReturn_TypeDef ret, uint8_t written)
+{
+  motor_enable_shadow = (ret == i2cTransferDone) ? (written & 0x0F) : 0x0F;
+}
+
 /*******************************************************************************
  **************************   GLOBAL FUNCTIONS   *******************************
  ******************************************************************************/
@@ -116,6 +131,7 @@ void set_motor_on(int motor)
 
   // Write out to expander to turn motor on
   ret = board_exp_transaction(I2C_FLAG_WRITE, &write_cmd[0], 2, NULL, 0);
+  note_port0_write(ret, write_cmd[1]);
   EFM_ASSERT(ret == i2cTransferDone);
 }
 
@@ -135,6 +151,7 @@ void set_all_motors_on()
 
   // Write out to expander to turn all motors on
   ret = board_exp_transaction(I2C_FLAG_WRITE, &write_cmd[0], 2, NULL, 0);
+  note_port0_write(ret, write_cmd[1]);
   EFM_ASSERT(ret == i2cTransferDone);
 }
 
@@ -155,6 +172,7 @@ void set_motor_off(int motor)
 
   // Write out to expander to turn motor off
   ret = board_exp_transaction(I2C_FLAG_WRITE, &write_cmd[0], 2, NULL, 0);
+  note_port0_write(ret, write_cmd[1]);
   EFM_ASSERT(ret == i2cTransferDone);
 }
 
@@ -174,6 +192,7 @@ void set_all_motors_off()
 
   // Write out to expander to turn all motors off
   ret = board_exp_transaction(I2C_FLAG_WRITE, &write_cmd[0], 2, NULL, 0);
+  note_port0_write(ret, write_cmd[1]);
   EFM_ASSERT(ret == i2cTransferDone);
 }
 
@@ -194,6 +213,7 @@ void set_motor_direction_up(int motor)
 
   // Write out to expander to set motor run direction
   ret = board_exp_transaction(I2C_FLAG_WRITE, &write_cmd[0], 2, NULL, 0);
+  note_port0_write(ret, write_cmd[1]);
   EFM_ASSERT(ret == i2cTransferDone);
 }
 
@@ -213,6 +233,7 @@ void set_all_motors_direction_up()
 
   // Write out to expander to set all motors run direction
   ret = board_exp_transaction(I2C_FLAG_WRITE, &write_cmd[0], 2, NULL, 0);
+  note_port0_write(ret, write_cmd[1]);
   EFM_ASSERT(ret == i2cTransferDone);
 }
 
@@ -233,6 +254,7 @@ void set_motor_direction_down(int motor)
 
   // Write out to expander and set motor run direction
   ret = board_exp_transaction(I2C_FLAG_WRITE, &write_cmd[0], 2, NULL, 0);
+  note_port0_write(ret, write_cmd[1]);
   EFM_ASSERT(ret == i2cTransferDone);
 }
 
@@ -252,6 +274,7 @@ void set_all_motors_direction_down()
 
   // Write out to expander and set all motors run direction
   ret = board_exp_transaction(I2C_FLAG_WRITE, &write_cmd[0], 2, NULL, 0);
+  note_port0_write(ret, write_cmd[1]);
   EFM_ASSERT(ret == i2cTransferDone);
 }
 
@@ -296,6 +319,16 @@ bool get_motor_enables(uint8_t *enables)
   }
   *enables = port0 & 0x0F;
   return true;
+}
+
+// True if the motor-enable lines MIGHT be high, from the shadow of what this file
+// last wrote - no I2C, safe from any context. Conservative: false only when the
+// last successful port-0 write left all four enables low. Used by
+// app_is_ok_to_sleep(): set_all_motors_on() energises without setting
+// motor_state[].motor_on (DECISIONS.md #40), so the flags alone cannot veto sleep.
+bool motor_outputs_maybe_on(void)
+{
+  return motor_enable_shadow != 0;
 }
 
 // Rate-limited, main-loop-context wrapper around get_motor_faults(). Call
@@ -457,6 +490,7 @@ void init_board_expander()
   write_cmd[0] = EXP_CMD_OUTPUT;
   write_cmd[1] = 0x00;
   ret = board_exp_transaction(I2C_FLAG_WRITE, &write_cmd[0], 2, NULL, 0);
+  note_port0_write(ret, write_cmd[1]);
   EFM_ASSERT(ret == i2cTransferDone);
   write_cmd[0] = EXP_CMD_OUTPUT + 1; // Advance to Port 1
   ret = board_exp_transaction(I2C_FLAG_WRITE, &write_cmd[0], 2, NULL, 0);

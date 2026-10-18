@@ -17,8 +17,10 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#include "em_gpio.h"
 #include "sl_atomic.h"
 #include "sl_simple_button_instances.h"
+#include "sl_simple_button_ui_int_config.h"
 #include "sl_sleeptimer.h"
 
 #include "app.h"
@@ -46,8 +48,13 @@
 #define SWITCH_UP_LEFT     0x4000
 #define SWITCH_UP_HEAD     0x8000
 
-/// Double press error check time interval
-#define DOUBLE_PRESS_ERROR_CHECK_TIME_INTERVAL 50 // time in ms
+// Switch sampler timing (DECISIONS.md #41). Milliseconds via sleeptimer, never
+// loop passes (#2).
+#define SWITCH_SAMPLE_MS            10
+#define SWITCH_DEBOUNCE_SAMPLES     3   // 3 identical reads = >=20 ms stable
+#define SWITCH_READ_FAIL_LIMIT      5   // 50 ms of failed reads -> all released
+#define SWITCH_STATE_STALE_MS       100 // fail-safe distrusts older data
+#define SWITCH_SAMPLER_DIAG         1   // bench prints; pre-ship: 0
 
 // Every SWITCH bit of the packed Port0/Port1 status word, and nothing else.
 // Port 0 is all eight single-side switches; Port 1 bits 0-3 are UP_ALL,
@@ -97,15 +104,13 @@
 #define PROVOKE_DELAY_MS 300
 
 // Flags
-static bool read_ui_data = false; // Interrupt flag to read the UI status
-static bool process_switch_change = true; // Indicates now clear to deal with another switch press
 bool switch_pressed = false; // Interrupt flag to capture switch up/down state - extern via switch_input.h
 
 /*
   I2C GPIO Expander Port 0 and Port 1 packed status variables
-  app_ui_status = ((uint16_t) (ports[0] << 8)) | ports[1];
+  status = ((uint16_t) (ports[0] << 8)) | ports[1]; (see ui_read_inputs())
 
-  app_ui_interrupt shares same bit mapping
+  app_ui_interrupt and the sampler's "down" masks share the same bit mapping
 
    P0_7  UP_M4           P1_7  EN_AMBERn
    P0_6  UP_M3           P1_6  EN_BLUEn
@@ -151,47 +156,7 @@ bool switch_pressed = false; // Interrupt flag to capture switch up/down state -
 static active_switch_t switch_held = OFF;
 static active_switch_t switch_driving = OFF;
 
-static uint16_t app_ui_status;
-static uint16_t app_ui_status_new; // Used for double press error check
-uint16_t app_ui_interrupt; // Packed Port0/1 interrupt source(s) - extern via switch_input.h
-static uint16_t app_ui_interrupt_new; // Used for double press error check
-
-// Timer for reading switch values during operation to ensure motors are off if no buttons are pressed
-// Important for pressing two switches at the same time
-static sl_sleeptimer_timer_handle_t double_press_error_timer;
-static bool double_press_error_timer_timeout = false;
-static bool is_double_press_error_timer_on = false;
-
-/*******************************************************************************/
-/// For double press error timer - ONESHOT
-/*******************************************************************************/
-// Called when the auto_level timer goes off
-static void callback_double_press_error_timer(sl_sleeptimer_timer_handle_t *handle_double_press_error, void *data_double_press_error)
-{
-  (void)handle_double_press_error;
-  (void)data_double_press_error;
-
-  double_press_error_timer_timeout = true;
-
-}
-
-// Starts a one-shot timer for auto_level
-static void start_double_press_error_timer()
-{
-  uint32_t ticks = sl_sleeptimer_ms_to_tick(DOUBLE_PRESS_ERROR_CHECK_TIME_INTERVAL);
-  sl_sleeptimer_start_periodic_timer(&double_press_error_timer, ticks, callback_double_press_error_timer, NULL, 0, 0);
-}
-
-// Resets the double-press-error timer - non-static: called by bed_actions.c
-// via switch_input.h.
-void app_reset_double_press_timer(void)
-{
-  sl_sleeptimer_stop_timer(&double_press_error_timer);
-  // Discard any expiry that already fired. Stopping a timer must also drop
-  // its pending result, or the flag survives to be consumed at an arbitrary
-  // later moment (DECISIONS.md #38).
-  double_press_error_timer_timeout = false;
-}
+uint16_t app_ui_interrupt; // The ONE switch bit of the edge being delivered - extern via switch_input.h
 
 // Clears ALL of the panel's own state together. The double-press handler used
 // to clear active_switch alone, which was correct before the #37 split when
@@ -234,55 +199,263 @@ static bed_target_t side_to_target(side_of_bed_t side)
   return BED_TARGET_HEAD; // unreachable - side_of_bed_t has exactly these 4 values
 }
 
-/*
- * OUT-OF-BAND STATUS READS MUST NOT SWALLOW SWITCH EVENTS (DECISIONS.md #40).
- *
- * Reading the expander's input port clears its interrupt flag (exp_ui.c,
- * get_ui_status()). The normal read in switch_input_tick() is the consumer of
- * that flag: it reads the interrupt SOURCE bits first, then the status. But
- * the double-press check and the motion fail-safe also read the status, on
- * their own timers. If one of them lands between a switch edge and the normal
- * read, it clears the flag, the normal read finds NO source bits, and the
- * event is dropped. A dropped RELEASE leaves switch_held / switch_driving set
- * and the motors running with nothing held - the unprovoked "FAILSAFE:" trip
- * in the 732dfed bench log, and the original runaway.
- *
- * So every out-of-band read goes through here. If the fresh switch bits
- * differ from the status latched at the last PROCESSED event, a change has
- * happened that has not been processed yet; record WHICH bits so the normal
- * read can use them if the chip no longer reports a source, and make sure the
- * normal read runs.
- *
- * app_ui_status_valid: before the first processed event app_ui_status is just
- * zero, which would read as "every switch changed".
- */
-static bool app_ui_status_valid = false;
-static uint16_t swallowed_change_hint = 0;
-
-static uint16_t get_ui_status_out_of_band(void)
+// Number of switches in a "down" mask (1 = physically down). Anything outside
+// SWITCH_INPUT_MASK is ignored.
+static uint8_t count_switches_down(uint16_t down)
 {
-  uint16_t status = get_ui_status();
-  uint16_t changed = (status ^ app_ui_status) & SWITCH_INPUT_MASK;
-
-  if (app_ui_status_valid && (changed != 0)) {
-    bool run_read = true;
-    swallowed_change_hint |= changed;
-    sl_atomic_store(read_ui_data, run_read);
-  }
-  return status;
-}
-
-// Number of switches physically down in a status word (active low). The LED
-// bits are excluded by the mask.
-static uint8_t count_switches_down(uint16_t status)
-{
-  uint16_t down = (uint16_t)(~status) & SWITCH_INPUT_MASK;
   uint8_t n = 0;
+  down &= SWITCH_INPUT_MASK;
   while (down != 0) {
     n += (uint8_t)(down & 1u);
     down >>= 1;
   }
   return n;
+}
+
+/*******************************************************************************
+ *** Switch sampler (DECISIONS.md #41) - the ONE reader of the UI input ports
+ *
+ * Reading an expander's input port clears its interrupt flag, so every extra
+ * reader races the others for the edge. Three code paths used to read it (the
+ * dispatch, the double-press check and the fail-safe) and a two-button release
+ * was dropped as a result. Now only this sampler reads (ui_read_inputs()), and
+ * everything else - the event dispatch, the double-press check, the fail-safe -
+ * uses the debounced state it keeps.
+ *
+ * A "session" starts when the UI_INT line asserts (edge flag, or a level check
+ * so a missed edge still starts one) and ends when everything is released and
+ * stable. During a session the off-board re-drivers are held on, and both UI
+ * boards are read every SWITCH_SAMPLE_MS and debounced per bit. Edges are
+ * delivered to process_inputs() one bit at a time, releases first.
+ *
+ * Everything is in "down" polarity: down = ~status & SWITCH_INPUT_MASK.
+ ******************************************************************************/
+
+#if SWITCH_SAMPLER_DIAG && !BED_CAPTURE_MOTOR_CURRENTS
+#define SW_DIAG(...) printf(__VA_ARGS__)
+#else
+#define SW_DIAG(...) ((void)0)
+#endif
+
+static bool     sampler_active = false;       // session running, re-drivers held
+static volatile bool ui_wake_request = false; // set by sl_button_on_change
+static bool     aux_present = false;
+static bool     switch_present = false;
+static uint16_t deb_down = 0;                 // debounced down-mask
+static uint8_t  pending_count[16];            // per-bit consecutive-differ counter
+static uint8_t  bounce_count[16];             // per-bit bounce tally for diag
+static uint8_t  read_fail_run = 0;
+static uint32_t next_sample_tick = 0;
+static uint32_t last_good_sample_tick = 0;
+static uint16_t pending_release = 0;          // accepted edges to deliver
+static uint16_t pending_press = 0;
+
+// UI_INT is the expanders' active-low interrupt output. Level check only, no I2C.
+static bool ui_int_asserted(void)
+{
+  return GPIO_PinInGet(SL_SIMPLE_BUTTON_UI_INT_PORT, SL_SIMPLE_BUTTON_UI_INT_PIN) == 0;
+}
+
+static uint16_t status_to_down(uint16_t status)
+{
+  return (uint16_t)(~status) & SWITCH_INPUT_MASK;
+}
+
+// One transaction per board that is not currently believed present. The result
+// is only used to decide presence; the next sample reads the real state.
+static void sampler_probe_missing_boards(void)
+{
+  uint16_t status;
+  if (!aux_present) {
+    aux_present = ui_read_inputs(UI_AUX_I2C_BUS_ADDRESS, &status);
+  }
+  if (!switch_present) {
+    switch_present = ui_read_inputs(UI_SWITCH_I2C_BUS_ADDRESS, &status);
+  }
+}
+
+// Baseline read at boot. Call from app_init() right after init_ui_expander().
+void switch_sampler_init(void)
+{
+  uint16_t status;
+  uint16_t down = 0;
+  bool no_wake = false;
+
+  sl_atomic_store(ui_wake_request, no_wake);
+  ui_redriver_acquire();
+
+  aux_present = ui_read_inputs(UI_AUX_I2C_BUS_ADDRESS, &status);
+  if (aux_present) {
+    down |= status_to_down(status);
+  }
+  switch_present = ui_read_inputs(UI_SWITCH_I2C_BUS_ADDRESS, &status);
+  if (switch_present) {
+    down |= status_to_down(status);
+  }
+
+  // No events are generated for what is found here. A button held at power-up
+  // is therefore never acted on: its press is never delivered, so switch_held
+  // is never set to its value, and when it is later released the release finds
+  // switch_held != its value and does nothing (process_inputs() only acts on a
+  // release whose switch_held matches).
+  deb_down = down;
+  last_good_sample_tick = sl_sleeptimer_get_tick_count();
+
+  // This baseline read also cleared any interrupt pending from boot.
+  if (deb_down != 0) {
+    sampler_active = true; // keep the re-driver hold
+    next_sample_tick = sl_sleeptimer_get_tick_count();
+  } else {
+    ui_redriver_release();
+  }
+}
+
+static void switch_sampler_tick(void)
+{
+  uint32_t now = sl_sleeptimer_get_tick_count();
+  bool wake;
+
+  if (!sampler_active) {
+    sl_atomic_load(wake, ui_wake_request);
+    if (!wake && !ui_int_asserted()) {
+      return;
+    }
+    ui_redriver_acquire();
+    sampler_probe_missing_boards();
+    sampler_active = true;
+    next_sample_tick = now;
+  }
+
+  if ((int32_t)(now - next_sample_tick) < 0) {
+    return;
+  }
+  uint32_t period = sl_sleeptimer_ms_to_tick(SWITCH_SAMPLE_MS);
+  next_sample_tick += period;
+  if ((int32_t)(now - next_sample_tick) >= 0) {
+    next_sample_tick = now + period; // more than one period behind: resync
+  }
+
+  // Clear BEFORE the read: an interrupt after the read sets it again and keeps
+  // the session alive.
+  bool no_wake = false;
+  sl_atomic_store(ui_wake_request, no_wake);
+
+  uint16_t raw = 0;
+  uint16_t status;
+  bool any_ok = false;
+  bool skip_debounce = false;
+  bool any_present = aux_present || switch_present;
+
+  if (aux_present) {
+    if (ui_read_inputs(UI_AUX_I2C_BUS_ADDRESS, &status)) {
+      raw |= status_to_down(status);
+      any_ok = true;
+    } else {
+      SW_DIAG("SW: aux board read failed\r\n");
+    }
+  }
+  if (switch_present) {
+    if (ui_read_inputs(UI_SWITCH_I2C_BUS_ADDRESS, &status)) {
+      raw |= status_to_down(status);
+      any_ok = true;
+    } else {
+      SW_DIAG("SW: switch board read failed\r\n");
+    }
+  }
+
+  if (any_ok) {
+    last_good_sample_tick = now;
+    read_fail_run = 0;
+  } else if (any_present) {
+    // Every present board failed this sample. Hold the debounced state until
+    // the limit, then fail toward OFF: all released, boards re-probed at the
+    // next session start.
+    if (read_fail_run < 255) {
+      read_fail_run++;
+    }
+    if (read_fail_run >= SWITCH_READ_FAIL_LIMIT) {
+      raw = 0;
+      aux_present = false;
+      switch_present = false;
+      SW_DIAG("SW: %u failed reads - treating all switches as released\r\n",
+              (unsigned)read_fail_run);
+    } else {
+      skip_debounce = true;
+    }
+  }
+  // else: no board present at all -> raw stays 0 (fail toward OFF)
+
+  if (!skip_debounce) {
+    for (uint8_t b = 0; b < 16; b++) {
+      uint16_t bit = (uint16_t)(1u << b);
+      if ((SWITCH_INPUT_MASK & bit) == 0) {
+        continue;
+      }
+      bool raw_b = ((raw & bit) != 0);
+      bool deb_b = ((deb_down & bit) != 0);
+
+      if (raw_b == deb_b) {
+        if (pending_count[b] > 0) {
+          if (bounce_count[b] < 255) {
+            bounce_count[b]++;
+          }
+          pending_count[b] = 0;
+        }
+      } else {
+        pending_count[b]++;
+        if (pending_count[b] >= SWITCH_DEBOUNCE_SAMPLES) {
+          deb_down ^= bit;
+          if (raw_b) {
+            pending_press |= bit;
+          } else {
+            pending_release |= bit;
+          }
+          SW_DIAG("SW: 0x%04X %s (bounces %u)\r\n", (unsigned)bit,
+                  raw_b ? "down" : "up", (unsigned)bounce_count[b]);
+          pending_count[b] = 0;
+          bounce_count[b] = 0;
+        }
+      }
+    }
+  }
+
+  // End the session only when everything is released AND stable AND no
+  // interrupt arrived since the read.
+  sl_atomic_load(wake, ui_wake_request);
+  if ((deb_down == 0) && !wake) {
+    bool settled = true;
+    for (uint8_t b = 0; b < 16; b++) {
+      if (pending_count[b] != 0) {
+        settled = false;
+      }
+    }
+    if (settled) {
+      sampler_active = false;
+      ui_redriver_release();
+    }
+  }
+}
+
+// True while a session is running (the sampler needs the main loop to run).
+bool switch_sampler_active(void)
+{
+  return sampler_active;
+}
+
+// Debounced down-mask. Idle => 0 by construction: a session only ends with
+// everything released, so idle state is valid without a read.
+uint16_t switch_sampler_down(void)
+{
+  return deb_down;
+}
+
+// False if the sampler is running but has had no good read for
+// SWITCH_STATE_STALE_MS. Consumers must then treat it as "no switch down".
+bool switch_state_fresh(void)
+{
+  return !sampler_active ||
+         (sl_sleeptimer_tick_to_ms(sl_sleeptimer_get_tick_count() - last_good_sample_tick)
+          <= SWITCH_STATE_STALE_MS);
 }
 
 #if BED_BENCH_PROVOKE_RUNAWAY
@@ -409,9 +582,6 @@ static void process_outputs()
   else if (in_settings_mode){
       settings_mode_process_outputs();
   }
-
-  // Ready to look at another switch input, if any
-  process_switch_change = true;
 }
 
 // Configures motor control elements based on response to change in switch state
@@ -490,7 +660,6 @@ static void process_inputs()
                 }
             } else if ((!switch_pressed) && (switch_held == SWITCH_BED_LIGHT_VALUE)){
                 switch_held = OFF;
-                sl_sleeptimer_stop_timer(&double_press_error_timer);
                 /*** For "Settings Mode" ***/
                 settings_mode_cancel_entry();
 
@@ -552,16 +721,19 @@ static void process_inputs()
  * was motors energised with active_switch == OFF, which also switches off
  * run_motor_supervision() and leaves nothing that would ever stop them.
  *
- * It asks the hardware directly and nothing else: is any switch physically
- * down? Is any motor-enable line actually high (not motor_state[] - #40)?
+ * It asks for the switch state and the motor hardware and nothing else: is any
+ * switch down, per the sampler's debounced state (#41 - the sampler is the only
+ * reader of the UI input ports, so this no longer reads them itself, and stale
+ * or unknown counts as "no switch down", i.e. it fails toward OFF)? Is any
+ * motor-enable line actually high (a direct read, not motor_state[] - #40)?
  * And, separately: Is the app commanding? Is auto-level running? Is settings mode active?
  * If all four are no and a motor is energised, that is a runaway by
  * definition - de-energise.
  *
  * Rate-limited to FAILSAFE_SAMPLE_MS, matching the sample_motor_faults_tick()
- * precedent: a direct read is blocking I2C on the UI expander, and per-pass
- * blocking I2C on a shared bus is DECISIONS #27/#30's radio-starvation
- * mechanism. Milliseconds via sleeptimer, never loop passes (#2).
+ * precedent: the motor-enable read is blocking I2C on the on-board expander,
+ * and per-pass blocking I2C on a shared bus is DECISIONS #27/#30's
+ * radio-starvation mechanism. Milliseconds via sleeptimer, never loop passes (#2).
  *
  * It requires FAILSAFE_CONFIRM_SAMPLES consecutive quiet samples before
  * acting. That is what stops it fighting the normal paths: the window between
@@ -585,7 +757,7 @@ static bool     failsafe_tripped = false; // print once, not every pass
 // produces.
 //
 // Cost: one blocking I2C transaction on sl_i2cspm_on_board per sample, i.e.
-// per FAILSAFE_SAMPLE_MS = 50 ms, and ONLY once the switch check above has
+// per FAILSAFE_SAMPLE_MS = 50 ms, and ONLY once the switch check below has
 // passed (so never while any button is down). Same order as
 // sample_motor_faults_tick() (5/s, same bus, same context), and it is
 // main-loop context, not a Bluetooth stack callback, so it is not the
@@ -627,13 +799,14 @@ void motion_failsafe_tick(void)
     return;
   }
 
-  // DIRECT hardware read - deliberately not any cached flag. Switches are
-  // active low with pull-ups, so a switch bit reading 0 means that button is
-  // physically down. The LED bits (P1_4-P1_7) are masked out: they are
+  // The sampler's debounced switch state - deliberately not active_switch,
+  // switch_held or any other bookkeeping, and no I2C read of its own (#41).
+  // Only SWITCH_INPUT_MASK bits are ever in it: the LED bits (P1_4-P1_7) are
   // outputs, and they are exactly what made the double-press check depend on
-  // something other than the switches (#35/#38).
-  uint16_t status = get_ui_status_out_of_band();
-  bool any_switch_down = ((status & SWITCH_INPUT_MASK) != SWITCH_INPUT_MASK);
+  // something other than the switches (#35/#38). Stale or unknown state counts
+  // as no switch down: this function must fail toward OFF.
+  bool any_switch_down = switch_state_fresh() &&
+                         (switch_sampler_down() != 0);
 
   if (any_switch_down) {
     failsafe_quiet_samples = 0;
@@ -700,25 +873,35 @@ void motion_failsafe_tick(void)
   }
 }
 
-// Called whenever there is a change in switch or expander interrupt state
+// Called whenever there is a change in switch or expander interrupt state.
+// Flag only: no I2C, nothing else. The sampler (switch_sampler_tick()) starts a
+// session on it. Only the asserting (PRESSED = UI_INT low) edge matters; the
+// release edge is the expander clearing its own flag after the sampler's read.
 void sl_button_on_change(const sl_button_t *handle)
 {
-  bool local_read_ui_data;
+  bool local_wake;
 
   // Will need to expand logic to handle motor fault as well
 
   if (sl_button_get_state(handle) == SL_SIMPLE_BUTTON_PRESSED) {
     if (&sl_button_ui_int == handle) { // Test for UI expander switch change
-        local_read_ui_data = true;
-        sl_atomic_store(read_ui_data, local_read_ui_data);
+        local_wake = true;
+        sl_atomic_store(ui_wake_request, local_wake);
     }
   }
 }
 
-// Runs the double-press-error check and (when a fresh switch change is
-// latched) the UI interrupt/status read + process_inputs() dispatch. Called
-// once per tick from app_process_action(), same relative position as the two
-// inline blocks it replaces.
+// Hands one accepted edge to the existing single-bit dispatch.
+static void deliver_switch_edge(uint16_t bit, bool pressed)
+{
+  app_ui_interrupt = bit;
+  switch_pressed = pressed;
+  process_inputs();
+}
+
+// Runs the double-press check, then the switch sampler, then delivers the
+// debounced edges the sampler accepted to process_inputs(). Called once per
+// tick from app_process_action().
 void switch_input_tick(void)
 {
   /****
@@ -729,159 +912,91 @@ void switch_input_tick(void)
       if (initial_switch_press){
           scan_all_currents();
           initial_switch_press = false;
-
-          // Double press error check timer. Not started for an app-sourced
-          // move - there is no second physical button to catch, and the
-          // check below is gated on the same condition anyway. Belt and
-          // braces: this also stops the periodic timer being left running
-          // across a source change.
-          if (bed_active_source() == BED_SOURCE_SWITCHES){
-              sl_sleeptimer_is_timer_running(&double_press_error_timer, &is_double_press_error_timer_on);
-              if (!is_double_press_error_timer_on){
-                  start_double_press_error_timer();
-              }
-          }
       }
       run_motor_supervision(active_switch, is_raising);
 
       // The double-press check below is a PHYSICAL SWITCH PANEL consistency
       // check and must only run on a move the panel actually started.
       //
-      // It compares the switch-board status latched at the last physical
-      // switch interrupt against a fresh read, and calls them a double press
-      // if they match. That status word includes the LED enable bits
-      // (P1_4-P1_7), which is what normally makes a legitimate physical hold
-      // differ from its own latched value - the LED for that move turns on
-      // after the latch.
-      //
       // An APP move sets active_switch through the same
-      // motor_button_pressed() the switch path uses, so before this gate the
-      // check ran on app moves too. With no physical button pressed, the
-      // fresh read matched the stale latched value whenever the app's LED
-      // happened to be the one that was lit at the last physical interrupt -
-      // firing a bogus "Double Press Error" that killed the motors and set
-      // active_switch = OFF, which the app's next 100 ms MOVE_START repeat
-      // then undid. That was the 10 Hz stutter, and the LED bits are why it
-      // only affected whichever app command type was in use during the
-      // conflict (green = single side, blue = ALL, red = auto-level).
+      // motor_button_pressed() the switch path uses, and no physical button is
+      // down during one, so the gate keeps this check off app moves (it
+      // misfired on them before - the 10 Hz stutter, #35/#38).
       //
       // run_motor_supervision() above is deliberately OUTSIDE this gate:
       // collision and limit supervision must cover app moves too.
       bool switch_sourced_move = (bed_active_source() == BED_SOURCE_SWITCHES);
 
-      // The flag is consumed UNCONDITIONALLY; only the check itself is gated
-      // (DECISIONS.md #38). Putting switch_sourced_move in the same condition
-      // as the clear - which is what #35 did - meant the flag went stale
-      // whenever the source was not SWITCHES, and a stale flag is then
-      // consumed at an arbitrary later moment instead of 50 ms after the
-      // latch. This check is only sound at that 50 ms point, because what
-      // makes a legitimate single press differ from its own latched status is
-      // the LED bits changing in between. Run it at any other time and it
-      // compares a steady state against an edge, and matches whenever the LED
-      // happens to line up. That is the misfire.
-      if (double_press_error_timer_timeout){
-          double_press_error_timer_timeout = false;
-
-        if (switch_sourced_move){
-
-          // Get source of switch interrupt
-          app_ui_interrupt_new = get_ui_interrupt();
-
-          // Read the switch board input ports and process accordingly
-          get_ui_status();
-          app_ui_status_new = get_ui_status_out_of_band();
-
-//          printf("Initial UI Interrupt Source = %d, Status = %d \r\n", app_ui_interrupt, app_ui_status);
-//          printf("New UI Interrupt Source = %d, Status = %d \r\n", app_ui_interrupt_new, app_ui_status_new);
-
-          // A double press is TWO PHYSICAL SWITCHES DOWN, read now from the
-          // hardware (DECISIONS.md #40). It used to be "status unchanged
-          // since the last latched interrupt", which is not a statement about
-          // switches at all: any extra interrupt after the LED changed (contact
-          // bounce on the press) re-latched the status with the LED already on,
-          // and anything that put the LED back to its latched state (auto-level
-          // ending with the button still held) did the same, so a single held
-          // button matched its own latch. Two switches down cannot be produced
-          // by one button, however it bounces.
-          if (count_switches_down(app_ui_status_new) >= 2){
+      // A double press is TWO PHYSICAL SWITCHES DOWN (DECISIONS.md #40), read
+      // from the sampler's debounced state (#41) - no I2C here, so it can be
+      // checked every pass instead of on a timer. Two switches down cannot be
+      // produced by one button, however it bounces.
+      if (switch_sourced_move && (count_switches_down(switch_sampler_down()) >= 2)){
 #if !BED_CAPTURE_MOTOR_CURRENTS
-              printf("Double Press Error\r\n");
-              printf("  switch word 0x%04X, %u switches down\r\n",
-                     (unsigned)(app_ui_status_new & SWITCH_INPUT_MASK),
-                     (unsigned)count_switches_down(app_ui_status_new));
+          printf("Double Press Error\r\n");
+          printf("  down mask 0x%04X, %u switches down\r\n",
+                 (unsigned)switch_sampler_down(),
+                 (unsigned)count_switches_down(switch_sampler_down()));
 #endif
-              set_dual_motors_off(HEAD);
-              set_dual_motors_off(FOOT);
-              // Clear the panel's state TOGETHER with active_switch (#38).
-              // Clearing active_switch alone left switch_held naming a button
-              // nobody was holding - so every other button failed its
-              // `switch_held == OFF` press test and went dead - and left
-              // switch_driving naming a button process_outputs would still
-              // energise on, which is motion with bed_control never consulted.
-              clear_switch_panel_state();
-              active_switch = OFF;
-              // Reset motor readings
-              reset_ignore_data_points_count();
-              reset_motor_current_data();
-              // Set all LEDs off
-              set_LED_off(LED_GREEN);
-              set_LED_off(LED_BLUE);
-              set_LED_off(LED_RED);
-//              set_LED_off(LED_AMBER);
-              /*** For "Settings Mode" ***/
-              settings_mode_cancel_entry();
-
-          } else {
-//              printf("No Error\r\n");
-          }
-        }
+          set_dual_motors_off(HEAD);
+          set_dual_motors_off(FOOT);
+          // Clear the panel's state TOGETHER with active_switch (#38).
+          // Clearing active_switch alone left switch_held naming a button
+          // nobody was holding - so every other button failed its
+          // `switch_held == OFF` press test and went dead - and left
+          // switch_driving naming a button process_outputs would still
+          // energise on, which is motion with bed_control never consulted.
+          clear_switch_panel_state();
+          active_switch = OFF;
+          // Reset motor readings
+          reset_ignore_data_points_count();
+          reset_motor_current_data();
+          // Set all LEDs off
+          set_LED_off(LED_GREEN);
+          set_LED_off(LED_BLUE);
+          set_LED_off(LED_RED);
+//          set_LED_off(LED_AMBER);
+          /*** For "Settings Mode" ***/
+          settings_mode_cancel_entry();
       }
   }
 
-  bool local_read_ui_data;
-  sl_atomic_load(local_read_ui_data, read_ui_data);
+  /****
+   * Switch sampler + edge delivery (DECISIONS.md #41)
+   ****/
 
-  if (local_read_ui_data && process_switch_change) {
+  switch_sampler_tick();
 
-      local_read_ui_data = false;
-      sl_atomic_store(read_ui_data, local_read_ui_data);
-      process_switch_change = false;
+  // One process_inputs() call per bit, so process_inputs()/process_outputs()
+  // and settings_mode_process_outputs() keep seeing exactly one single-bit
+  // mask per call, as they always have.
+  uint16_t releases = pending_release;
+  uint16_t presses = pending_press;
+  pending_release = 0;
+  pending_press = 0;
 
-      // Get source of switch interrupt
-      app_ui_interrupt = get_ui_interrupt();
+  // Releases first, so a release always reaches bed_move_stop() before
+  // anything new can start.
+  for (uint8_t b = 0; b < 16; b++) {
+    uint16_t bit = (uint16_t)(1u << b);
+    if (releases & bit) {
+      deliver_switch_edge(bit, false);
+    }
+  }
 
-      // The chip reports no source if an out-of-band status read cleared its
-      // flag first (#40). Fall back to the bits that read saw change.
-      if ((app_ui_interrupt == 0) && (swallowed_change_hint != 0)) {
-#if !BED_CAPTURE_MOTOR_CURRENTS
-          printf("UI: recovered swallowed switch change 0x%04X\r\n", swallowed_change_hint);
-#endif
-          app_ui_interrupt = swallowed_change_hint;
+  if (presses != 0) {
+    if (count_switches_down(deb_down) >= 2) {
+      // Two or more down: no press may start anything (a second press during a
+      // move is caught by the double-press check above on the next pass).
+      SW_DIAG("SW: %u switches down - presses ignored\r\n",
+              (unsigned)count_switches_down(deb_down));
+    } else {
+      for (uint8_t b = 0; b < 16; b++) {
+        uint16_t bit = (uint16_t)(1u << b);
+        if (presses & bit) {
+          deliver_switch_edge(bit, true);
+        }
       }
-      swallowed_change_hint = 0;
-
-      // Read the switch board input ports and process accordingly
-      get_ui_status();
-      app_ui_status = get_ui_status();
-      app_ui_status_valid = true;
-//       printf("\r\n");
-//       printf("UI Interrupt Source = %d, Status = %d \r\n", app_ui_interrupt, app_ui_status);
-
-      /*
-       Mask interrupt variable in bitwise AND with switch state variable
-       to determine the state of the switch - pressed or released.
-
-       Switches are active low with pull-ups, so if status bit is 1 when
-       state change was latched into register, switch was released.
-       */
-
-      if (app_ui_interrupt & app_ui_status){ // Switch was released
-        switch_pressed = false;
-      }
-      else {
-        switch_pressed = true;
-      }
-
-      process_inputs();
+    }
   }
 }

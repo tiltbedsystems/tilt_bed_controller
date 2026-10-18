@@ -1724,3 +1724,82 @@ the evidence: if the hypothesis is wrong it will never appear.
 Builds clean with the bench flag at 0 and at 1. **None of this has been run on
 the bench.** The swallowed-event mechanism is inferred from code and the
 `exp_ui.c` comment, not from the datasheet or a capture.
+
+## 41. One switch reader
+
+Date: 2026-10-17. Implements `docs/SWITCH_SAMPLER_DESIGN.md` (written by the
+reviewer after the `prompt_q_bench.txt` log).
+
+### Why
+
+Three code paths read the UI expanders' input ports: the event dispatch, the
+double-press check and the fail-safe. Each read clears the expander's interrupt
+flag, so they raced for every edge. In the bench log a two-button release
+arrived as one event carrying two bits, `process_inputs()` only matches
+single-bit masks, the release was dropped, and the fail-safe stopped the motors
+about 200 ms later (five times). There was no debounce anywhere.
+
+### Decision
+
+- **Only the switch sampler reads the UI input ports.** `ui_read_inputs()` in
+  `exp_ui.c` is the only function that issues `EXP_CMD_READ_INPUTS` to a UI
+  board and the sampler in `switch_input.c` is its only caller. The dispatch,
+  the double-press check and the fail-safe use the sampler's debounced state.
+- **Sampling session.** Starts on the UI_INT edge flag or, at idle, on a level
+  check of the UI_INT pin (so a missed edge still starts one). During a session
+  both boards are read every 10 ms and each bit is debounced (3 identical reads).
+  The session ends only when everything is released, stable and no interrupt
+  arrived since the last read.
+- **One event per bit, releases first.** Accepted edges are handed to
+  `process_inputs()` one bit at a time, so it always sees a single-bit mask.
+  All releases are delivered before any press.
+- **No presses while 2 or more are down.** If two or more switches are down when
+  presses are due, none is delivered. A second press during a move is caught by
+  the double-press check, which is now "2 or more bits in the debounced
+  down-mask", evaluated every pass instead of on a 50 ms timer.
+- **Re-driver reference count.** `ui_redriver_acquire()/release()` own the
+  off-board re-drivers (EN_I2C_DRIVER, on-board expander P1_5, which powers only
+  the PCA9617A re-drivers and their pull-ups; the Switch board expander, its LEDs
+  and the interrupt line are on always-on 3V3). Every UI transaction takes a
+  hold for its own duration, so behaviour is unchanged when nothing holds it; a
+  session holds it throughout, so there is no per-transaction toggling or 2 ms
+  delay. EN only changes between transfers: all callers are main-loop context
+  (every sleeptimer callback in the firmware only sets a flag, and
+  `sl_button_on_change` is now flag-only).
+- **Sleep veto.** `app_is_ok_to_sleep()` returns false while a session is active
+  and while the motor-enable shadow (`motor_outputs_maybe_on()` in `exp_board.c`,
+  updated by every port-0 writer, set to "on" at boot and after any failed write)
+  says the motors might be energised. `set_all_motors_on()` energises without
+  setting `motor_state[].motor_on` (#40), so a runaway could previously let the
+  CPU sleep between fail-safe samples - the suspected cause of the ALL MOTORS
+  fail-safe taking 271-307 ms against 214-223 ms for the HEAD pair.
+- **Fail toward OFF.** The fail-safe treats stale (no good read for 100 ms during
+  a session) or unknown state as "no switch down". After 5 consecutive samples in
+  which every present board failed, all switches are treated as released and the
+  boards are re-probed at the next session start.
+- A button held at power-up is never acted on (no press event is generated for
+  the baseline read), and its later release does nothing.
+
+### Known limit
+
+The expander can drop an edge that coincides with the ACK of its own read.
+Mid-session the next 10 ms sample catches it. At session end a press in that
+window is lost: the press does nothing, which is benign, and it is never a lost
+release, because sessions only end with everything released. The UI_INT level
+check at idle covers a line that is stuck asserted (at the cost of the sampler
+running continuously and blocking sleep while it is).
+
+### Behaviour changes to expect
+
+- Release is now seen after the debounce, about 20-30 ms after the contact opens,
+  so a move stops that much later than before (+ up to one sample period).
+- Double-press detection is continuous rather than 50 ms after the initial press.
+- `SWITCH_SAMPLER_DIAG` is 1: `SW:` lines print for every accepted edge, with a
+  per-bit bounce tally. Set it to 0 before shipping.
+
+### Status
+
+Builds clean (no warnings, no errors) from the command line with
+`BED_BENCH_PROVOKE_RUNAWAY` at 0. **None of this has been run on the bench.**
+DECISIONS.md #40's "recovered swallowed switch change" mechanism is removed;
+whether the swallow hypothesis was right is unproven either way.

@@ -47,6 +47,11 @@ uint8_t get_motor_faults();
 // survive a bus error rather than hang on it.
 bool get_motor_enables(uint8_t *enables);
 
+// True if the motor-enable lines might be high, per a shadow of the last port-0
+// write (no I2C). Starts true (unknown at boot) and returns true again after any
+// failed write. See exp_board.c; used by app_is_ok_to_sleep().
+bool motor_outputs_maybe_on(void);
+
 // Interim polled motor-fault telemetry (main-loop context) - see
 // sample_motor_faults_tick()'s comment in exp_board.c for the rate
 // justification and the transient-miss limitation.

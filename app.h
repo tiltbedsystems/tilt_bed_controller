@@ -118,8 +118,7 @@ extern bool first_print[10];
 #define SWITCH_BED_LIGHTS  0x0008
 
 // Resets the auto-level timer that bed_actions.c's moved functions used to
-// touch directly via its app.c-private handle. app_reset_double_press_timer()
-// moved to switch_input.h - switch_input.c now owns double_press_error_timer.
+// touch directly via its app.c-private handle.
 void app_reset_auto_level_timer(void);
 
 // LED helpers bed_actions.c needs (auto-level stop, forced stop). Implemented

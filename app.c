@@ -98,7 +98,7 @@
 
 // Flags
 static bool heartbeat = false; // Interrupt flag for LED heartbeat - use for debug only
-// read_ui_data/process_switch_change/switch_pressed moved to switch_input.c
+// switch_pressed moved to switch_input.c
 bool auto_level_active = false; // Tracks whether autolevel is running - extern via app.h, see bed_actions.c
 bool is_raising; // Used to set specific collision threshold based on whether motors are raising or lowering - extern via app.h, see bed_actions.c
 
@@ -112,8 +112,7 @@ Ecode_t nvm3Status;
 // zeroLevelFirstPass, resetZeroLevelFirstPass, writeCollisionDetection,
 // nvm3StatusCounter) - see settings_mode.h.
 
-// app_ui_status/app_ui_status_new/app_ui_interrupt/app_ui_interrupt_new moved
-// to switch_input.c
+// app_ui_interrupt moved to switch_input.c
 
 static sl_sleeptimer_timer_handle_t heartbeat_delay_timer;
 static sl_sleeptimer_timer_handle_t LED_500ms_timer; // For collision detected LED blinks
@@ -125,7 +124,6 @@ static bool is_auto_level_LED_blink_timer_on = false;
 static sl_sleeptimer_timer_handle_t LED_200ms_timer; // For rapid LED blink for settings or for failed auto-level
 static sl_sleeptimer_timer_handle_t auto_level_timer;
 // handle_5000ms_timer/handle_2000ms_timer moved to settings_mode.c
-// double_press_error_timer + its flags moved to switch_input.c
 
 // Used to determine if all LEDs are on or off for turning all off and on in LED_timer_callback
 static bool all_LEDs_on = false;
@@ -241,8 +239,6 @@ static void start_auto_level_LED_blink_oneshot_timer()
   uint32_t ticks = sl_sleeptimer_ms_to_tick(500);
   sl_sleeptimer_start_periodic_timer(&auto_level_LED_blink_timer, ticks, callback_auto_level_LED_blink_timer, NULL, 0, 0);
 }
-
-// double_press_error_timer's callback/starter moved to switch_input.c
 
 /*******************************************************************************/
 /*******************************************************************************/
@@ -364,8 +360,6 @@ static void reset_expanders()
 
 // Resets the auto-level timer - bed_actions.c's action functions used to
 // touch it directly via its app.c-private handle - see app.h.
-// app_reset_double_press_timer() moved to switch_input.c, which now owns
-// double_press_error_timer.
 void app_reset_auto_level_timer(void)
 {
   sl_sleeptimer_stop_timer(&auto_level_timer);
@@ -402,6 +396,7 @@ void app_init(void)
   reset_expanders();
   init_board_expander();
   init_ui_expander();
+  switch_sampler_init(); // baseline read of the UI boards; DECISIONS.md #41
 
   int PWM_duty = 100;
 
@@ -503,6 +498,22 @@ bool app_is_ok_to_sleep(void)
     if (motor_state[i].motor_on) {
       return false;  // A motor is running - keep the supervision loop fast.
     }
+  }
+
+  // The switch sampler is polled from the main loop (10 ms cadence), so a
+  // sampling session needs the loop awake (DECISIONS.md #41).
+  if (switch_sampler_active()) {
+    return false;
+  }
+
+  // The motor-enable shadow, not just motor_state[]: set_all_motors_on()
+  // energises the outputs without setting motor_state[].motor_on (#40), so a
+  // runaway could previously let the CPU sleep between fail-safe samples - the
+  // suspected cause of the ALL MOTORS fail-safe taking 271-307 ms against
+  // 214-223 ms for the HEAD pair. The shadow is conservative (true until a
+  // successful write leaves all four enables low), and needs no I2C.
+  if (motor_outputs_maybe_on()) {
+    return false;
   }
 
   // A tilt telemetry burst also needs the loop (DECISIONS.md #33). The
