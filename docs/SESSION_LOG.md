@@ -1240,3 +1240,43 @@ Closes the *means* to test #38's assumption A4. **It does not close A4.**
 - ...that the old #40 "recovered swallowed switch change" explanation was confirmed: that mechanism is deleted, and whether the swallow hypothesis was right is still unproven either way.
 - ...that the 271-307 ms vs 214-223 ms figures or the "CPU sleeping between samples" cause were observed by this session: they are the design's numbers and inference.
 - ...that the flag-1 build is harmless: it must never be left on the bed.
+
+## 2026-10-18 — Prompt V: sampler bench result, switch follow-ups, settings-mode exit, pairing window
+
+**Commits**
+
+- `acd410a` — docs only: DECISIONS #41 "Bench result (2026-10-18)" note; REGRESSION.md §3b "Switch sampler (DECISIONS #41)" (the 05 handoff's b.12 checklist plus the recorded result); commits `docs/prompts/PROMPT_V_switch-followups-and-pairing-window.md`.
+- `47db449` — B1 `SWITCH_DEBOUNCE_SAMPLES` 3 -> 2 (DECISIONS #41 / REGRESSION 3b.1 text updated); B2 Double Press Error now calls `bed_note_source_released(BED_SOURCE_SWITCHES)`; B3 `bed_actions.c` no longer includes `switch_input.h`.
+- `dd8d069` — C settings mode exits on a NEW BED LIGHTS press: `settings_mode_exit()`, `fast_stop_blink_LED()` (app.c), `switch_input_clear_panel_state()` (switch_input.c); REGRESSION 7.9 rewritten.
+- `944f19e` — D pairing window: `confirm_bonding` accepts only while `app_in_settings_mode()`, rejects with confirm 0 otherwise; new print; DECISIONS #42; BLE_GATT_DESIGN §8 points to it.
+- The handoff `docs/handoffs/fw_HANDOFF_2026-10-18_01_switch-followups-settings-exit-pairing-window.md` and this entry are committed together after these.
+
+**VERIFIED**
+
+- The user's 2026-10-18 bench run of `d1f13d0` (`PuTTY Logs/sampler_bench.log`, re-counted by me from the raw log): provoked runaway HEAD pair caught after 209, 248, 209, 209, 209 ms; ALL MOTORS after 209, 210, 210, 217, 249 ms (gap vs HEAD gone); every `FAILSAFE:` line directly follows a `PROVOKE:` line; no `Unrecognized switch mask`, no `failed`; 67 two-button episodes over 30 pairs, all printed `presses ignored`, 57 of them also `Double Press Error`, every release came through; 700 accepted edges, 696 with 0 bounces and 4 with 1; power-up with UP HEAD held gave no motion, release printed `SW: 0x8000 up`, next press moved. Note: the prompt's wording ("presses ignored" OR "Double Press Error") is slightly off — the 57 DPE episodes printed both.
+- A bonded phone reconnecting does not raise `confirm_bonding`: same log, lines 956-961 and 979-984 (`bonding=0x01`, `security_mode=1`, no `confirm_bonding` line, security log on).
+- Each of the four commits built from the command line with exit 0 and no warnings (raw output in the handoff, d.3).
+- Code facts by reading: `switch_held` stays `SWITCH_BED_LIGHT_VALUE` for all of settings mode (the entry release takes `process_inputs()`'s settings branch, which never clears it); the only writer of `active_switch = SWITCH_BED_LIGHT_VALUE` is `app_lights_set()`, and the BLE LIGHTS path releases it in the same call; the Bed Status settings flag is read live every tick, so it follows the exit with no change.
+- SDK header: `store_bonding_configuration(8, 0)` policy 0 means "if database is full, pairing will be performed but no bonding is stored" — the code comment at `ble_bed_service.c:888-889` ("reject new bonds") contradicts this.
+- `BED_BENCH_PROVOKE_RUNAWAY` 0, `BLE_BENCH_WIPE_BONDS` 0 in the committed tree.
+
+**ASSERTED-but-untested (nothing of B/C/D has run on the bench)**
+
+- That debounce 2 gives 10-20 ms release latency and still rejects one-sample bounces.
+- That the settings-mode exit behaves as designed: LEDs, lights untouched, no re-entry while held, release does nothing, every button works after.
+- That the pairing gate accepts/rejects as designed, and that a rejected phone gets a clean failure (SDK doc, not observed).
+- That B2 changes anything observable (the latch only matters after a two-source conflict).
+
+**Open**
+
+- Bench: the reviewer's steps in the handoff section b.7 (single press at debounce 2; enter/exit settings mode; each button after exit; pairing (a)-(d)).
+- Decisions for the reviewer (handoff QUESTIONS): 8-bond-full policy and the wrong comment; whether to disconnect a rejected phone; STOP_ALL in settings mode (does not exit, does not stop settings timers); window has no timeout; bonding_handle dropped from the print per the specified format; REGRESSION 7.9 rewrite; CLAUDE.md's stale "no BLE glue" line.
+- `SWITCH_SAMPLER_DIAG` is still 1 (pre-ship: 0). `.projectlinkstore` still modified, never committed.
+
+**The next session must NOT assume**
+
+- ...that the exit or the pairing gate work: they build, nothing more.
+- ...that the 2026-10-18 bench figures apply to debounce 2: they were measured at debounce 3.
+- ...that DECISIONS #19 is the implementation record: #19 is the policy; #42 is the implementation (19 was taken).
+- ...that the 8-bond store rejects a 9th phone: per the SDK it pairs without storing a bond.
+- ...that STOP_ALL or anything other than a new BED LIGHTS press (or a reset) exits settings mode.
