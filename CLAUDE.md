@@ -194,6 +194,15 @@ only exists in an upload is not evidence.
 Retention: none. Nothing is pruned or archived, and one file per session
 accumulates indefinitely. Revisit if the directory gets heavy.
 
+### Pushing (standing rule)
+
+**At the end of every session, after the handoff file is committed, push to
+`origin/main` with a normal `git push`. Never force-push** (no `--force`, no
+`--force-with-lease`). If the push fails, do not try to resolve it — no
+merge, rebase, or reset — report the raw error in the handoff file instead.
+Work that exists only on this machine is not backed up; the repo went over two
+months unpushed before this rule existed.
+
 ## Where this fits in the migration (D1)
 
 See `docs/MIGRATION_STATUS.md` for the live checklist. Short version: this
