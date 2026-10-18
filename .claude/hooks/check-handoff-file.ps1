@@ -64,9 +64,9 @@ summary cannot stand in for the work it summarises.
 
 Required contents, in order:
   a. Repo, branch, HEAD before, HEAD after, full "git status" output
-  b. THE FULL TEXT of every plan/design/recommendation/analysis produced,
-     verbatim and inline -- never a summary, never a pointer
-  c. The complete "git diff" for every source change, verbatim
+  b. Every plan/design/recommendation/analysis produced, written out as a
+     complete design document -- never a one-line description or a pointer
+  c. The complete "git diff" for every source change, as command output
   d. Raw output of every command run, including failures
      (secrets replaced inline with [REDACTED: what it was], never omitted)
   e. Every claim split VERIFIED vs ASSERTED, evidence attached to each

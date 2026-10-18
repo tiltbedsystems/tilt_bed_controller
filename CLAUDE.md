@@ -119,10 +119,10 @@ session on the same date does not satisfy it, and unlike the log hook this one
 The two have different readers and different jobs. `SESSION_LOG.md` is a
 summary for the next Claude Code session, and it keeps that job unchanged.
 The handoff file is for a **reviewer outside this repository**, who sees only
-this file — no conversation, no transcript, no repo browsing. A summary cannot
-serve as evidence of the work it summarises; a reviewer who is handed a
-description of a plan instead of the plan cannot review it. See
-`docs/handoffs/README.md` for the incident that established this.
+this file and the files uploaded with it, and cannot browse the repo. A
+one-line description of a plan cannot be reviewed; the plan itself has to be
+written out in the file. See `docs/handoffs/README.md` for the incident that
+established this.
 
 ### Filename
 
@@ -148,14 +148,16 @@ docs/handoffs/fw_HANDOFF_<YYYY-MM-DD>_<NN>_<slug>.md
 
 - **a. Header.** Repo name, branch, HEAD before the session, HEAD after, and
   the full output of `git status` at the end.
-- **b. THE FULL TEXT of every plan, design, recommendation, or analysis the
-  session produced.** Verbatim, complete, inline in this file. Never a
-  summary. Never a pointer to another document — not even one in this repo.
-  If a plan existed only in the conversation, write it into this file in
-  full. **This is the single most important requirement and the specific
-  failure this file exists to prevent.**
-- **c. The complete `git diff` for every source change**, verbatim — not a
-  description of it. A docs-only diff over 400 lines may be truncated with an
+- **b. Every plan, design, recommendation, or analysis the session produced,
+  written out in this file as a complete design document.** Include what a
+  reviewer needs to approve or reject it without asking: the design itself,
+  pseudo-code where it helps, the files and functions affected, trade-offs,
+  and the evidence. Do not replace it with a one-line description, and do not
+  point to another document instead — not even one in this repo. **This is
+  the single most important requirement and the specific failure this file
+  exists to prevent.**
+- **c. The complete `git diff` for every source change**, pasted as command
+  output — not a description of it. A docs-only diff over 400 lines may be truncated with an
   explicit note saying so; **source diffs are never truncated.** One standing
   exception: the `docs/SESSION_LOG.md` diff never needs reproducing, because
   the log ships alongside the handoff in the same upload — note its omission
@@ -166,7 +168,7 @@ docs/handoffs/fw_HANDOFF_<YYYY-MM-DD>_<NN>_<slug>.md
   `[REDACTED: what it was]` — never silently drop the line or the command.
   A reader must be able to see that something was removed and what kind of
   thing it was. This carve-out covers command output only; it does not
-  license summarising under (b), which governs plans.
+  permit shortening a plan under (b).
 - **e. Every claim split VERIFIED vs ASSERTED, with the evidence attached to
   each VERIFIED claim** — `file:line` for a code fact, raw output for a run
   result. This repo's existing VERIFIED/ASSERTED discipline (see the section
@@ -177,8 +179,8 @@ docs/handoffs/fw_HANDOFF_<YYYY-MM-DD>_<NN>_<slug>.md
 - **g. `NOT DONE`** — anything asked for and not done, with the reason.
 
 Sections (b) and (e) are where this file earns its keep. Length is not a
-reason to summarise: if the choice is between a long file and an incomplete
-one, write the long file.
+reason to cut a plan short: if the choice is between a long file and an
+incomplete one, write the long file.
 
 ### Committing
 

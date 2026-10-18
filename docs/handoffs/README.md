@@ -1,13 +1,12 @@
 # docs/handoffs/ — reviewer-facing session handoff files
 
 One file per working session, holding the **artifacts** that session produced:
-plans in full, diffs in full, raw command output, and every claim split
-VERIFIED vs ASSERTED with its evidence attached.
+complete plans and design documents, complete diffs, raw command output, and
+every claim split VERIFIED vs ASSERTED with its evidence attached.
 
-These files are uploaded to a reviewer **outside this repository**, who has no
-access to the conversation, the transcript, or anything else that is not in
-the file. Whatever is not written here does not exist as far as review is
-concerned.
+These files are uploaded to a reviewer **outside this repository**, who sees
+only the uploaded files and cannot browse the repo. Whatever is not written
+here does not exist as far as review is concerned.
 
 ## Why this exists separately from SESSION_LOG.md
 
@@ -31,8 +30,8 @@ repair of that specific gap.
 |---|---|---|
 | Audience | the next Claude Code session | an external reviewer |
 | Form | one appended entry, summary | one file per session, artifacts |
-| Plans | referred to | reproduced in full, inline |
-| Diffs | described | pasted verbatim |
+| Plans | referred to | written out as a complete design document |
+| Diffs | described | pasted as command output |
 | Commands | conclusions | raw output, including failures |
 | Evidence | claims classified | classification **plus** the evidence |
 | Growth | one file, append-only forever | one new file per session |
@@ -60,16 +59,16 @@ docs/handoffs/fw_HANDOFF_<YYYY-MM-DD>_<NN>_<slug>.md
 
 The authoritative specification is the **"Session handoff file (required)"**
 section of `CLAUDE.md`. In short, in this order: (a) repo/branch/HEAD
-before/HEAD after/full `git status`; (b) the full text of every plan, design,
-recommendation or analysis produced, verbatim and inline; (c) the complete
+before/HEAD after/full `git status`; (b) every plan, design, recommendation
+or analysis produced, written out as a complete design document; (c) the complete
 `git diff` for every source change; (d) raw output of every command run;
 (e) VERIFIED vs ASSERTED with evidence attached; (f) QUESTIONS FOR REVIEW;
 (g) NOT DONE.
 
-The rule that matters most is (b). Never summarise a plan here, and never
-point at another document for it — inline the whole thing, even if it already
-exists elsewhere, even if it is long. If a plan existed only in the
-conversation, write it into the handoff file in full.
+The rule that matters most is (b). Never reduce a plan to a one-line
+description here, and never point at another document for it — write the
+whole design into this file, even if it already exists elsewhere, even if it
+is long.
 
 "Self-contained" means against documents the reviewer cannot see. Sibling
 handoff files uploaded in the same batch are visible, so one handoff need not
