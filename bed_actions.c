@@ -218,6 +218,14 @@ void app_stop_all(void)
   }
   set_all_LED_off();
   reset_limit_switch_flags(); // stale inferred limits must not survive a stop (#37)
+  if (in_settings_mode) {
+    // STOP in settings mode abandons a sensitivity or zero-angle hold in
+    // progress and stays in settings mode (Prompt W, user decision 3). Without
+    // this the hold's timer keeps running after active_switch is cleared
+    // below, and its timeout would act on the next hold the moment it starts.
+    // The amber blink resumes by itself: settings_mode_tick() keeps it going.
+    settings_mode_cancel_holds();
+  }
   active_switch = OFF;
 }
 

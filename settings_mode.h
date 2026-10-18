@@ -38,6 +38,13 @@ void settings_mode_process_outputs(void);
 // during the entry hold (the double-press-check block).
 void settings_mode_cancel_entry(void);
 
+// Abandons any settings-mode hold in progress (UP_ALL/DOWN_ALL sensitivity
+// step, AUTO_LEVEL zero-angle store/erase): stops both settings timers and
+// clears both timeout flags. No NVM3 write; does NOT leave settings mode.
+// Called by the hold-release branches, by settings_mode_exit(), and by
+// app_stop_all() (bed_actions.c) when STOP arrives in settings mode.
+void settings_mode_cancel_holds(void);
+
 // Leaves settings mode: stops both settings timers (no NVM3 write), turns the
 // motors off, stops the amber fast blink and restores amber to the under-bed
 // lights state, turns red/green/blue off, and clears the panel bookkeeping

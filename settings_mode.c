@@ -111,6 +111,20 @@ void settings_mode_cancel_entry(void)
   timeout_5000ms = false;
 }
 
+// Abandons any settings-mode hold in progress - a sensitivity step (UP_ALL/
+// DOWN_ALL, 2 s) or a zero-angle store/erase (AUTO_LEVEL, 2 s / 5 s). Stops
+// both timers AND clears both timeout flags: a flag left set by a timer that
+// fired just before the hold ended would otherwise be acted on by the NEXT
+// hold the moment it starts. Writes nothing to NVM3 and does not leave
+// settings mode.
+void settings_mode_cancel_holds(void)
+{
+  sl_sleeptimer_stop_timer(&handle_2000ms_timer);
+  timeout_2000ms = false;
+  sl_sleeptimer_stop_timer(&handle_5000ms_timer);
+  timeout_5000ms = false;
+}
+
 // Leaves settings mode and returns the panel to a clean normal-mode idle.
 // Triggered by a NEW press of BED LIGHTS while in settings mode (see
 // settings_mode_process_outputs()). Also closes the BLE pairing window, which
@@ -124,10 +138,7 @@ void settings_mode_exit(void)
 
   // Abandon any store/erase/sensitivity hold in progress: nothing half-done
   // survives the exit, and nothing is written to NVM3 here.
-  sl_sleeptimer_stop_timer(&handle_2000ms_timer);
-  timeout_2000ms = false;
-  sl_sleeptimer_stop_timer(&handle_5000ms_timer);
-  timeout_5000ms = false;
+  settings_mode_cancel_holds();
 
   // Settings mode is excluded from the motion fail-safe, so leave nothing
   // energised behind it.
@@ -189,7 +200,7 @@ void settings_mode_process_outputs(void)
       else if (active_switch == SWITCH_UP_ALL_VALUE){
 
         active_switch = OFF;
-        sl_sleeptimer_stop_timer(&handle_2000ms_timer);
+        settings_mode_cancel_holds(); // also clears a timeout that fired just before the release
         set_LED_off(LED_RED);
         set_LED_off(LED_GREEN);
         set_LED_off(LED_BLUE);
@@ -208,8 +219,7 @@ void settings_mode_process_outputs(void)
       // On release
       else if ((!switch_pressed) && (active_switch == SWITCH_AUTO_LEVEL_VALUE)){
         active_switch = OFF;
-        sl_sleeptimer_stop_timer(&handle_2000ms_timer);
-        sl_sleeptimer_stop_timer(&handle_5000ms_timer);
+        settings_mode_cancel_holds(); // also clears a timeout that fired just before the release
         set_LED_off(LED_RED);
         set_LED_off(LED_GREEN);
         set_LED_off(LED_BLUE);
@@ -226,7 +236,7 @@ void settings_mode_process_outputs(void)
       else if (active_switch == SWITCH_DOWN_ALL_VALUE){
 
         active_switch = OFF;
-        sl_sleeptimer_stop_timer(&handle_2000ms_timer);
+        settings_mode_cancel_holds(); // also clears a timeout that fired just before the release
         set_LED_off(LED_RED);
         set_LED_off(LED_GREEN);
         set_LED_off(LED_BLUE);
@@ -260,7 +270,11 @@ void settings_mode_process_outputs(void)
 // active) the zero-angle store/erase and sensitivity-ladder logic.
 void settings_mode_tick(void)
 {
-  if ((switch_pressed == true) && (active_switch == SWITCH_BED_LIGHT_VALUE) && (!in_settings_mode)){
+  // switch_pressed is only the direction of the LAST edge delivered, for any
+  // button, so the entry hold also requires BED LIGHTS to be physically down
+  // in the sampler's debounced state (#41).
+  if ((switch_pressed == true) && (active_switch == SWITCH_BED_LIGHT_VALUE) && (!in_settings_mode)
+      && ((switch_sampler_down() & SWITCH_BED_LIGHTS) != 0)){
     sl_sleeptimer_is_timer_running(&handle_5000ms_timer, &is_5000ms_timer_running);
 
     if (!is_5000ms_timer_running){
