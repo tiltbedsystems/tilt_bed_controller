@@ -1931,3 +1931,59 @@ bench run).**
 That the Android app closed the link after the rejection is that app's
 behaviour, not the firmware's. Prompt W part B (recorded as #43, below)
 makes the firmware close it.
+
+## 43. Bond store full: overwrite the least recently used bond; the firmware disconnects a phone whose pairing it refused
+
+Date: 2026-10-18. User decisions (Prompt W, decisions 1 and 2), building on
+#42.
+
+### 1. Bond store full -> overwrite the bond used the longest time ago
+
+`sl_bt_sm_store_bonding_configuration(BLE_BED_SERVICE_MAX_BONDS, 2)` at
+system boot (`ble_bed_service.c`), was `(..., 0)`. The SDK documents the
+policy values (`sl_bt_api.h`, the function's doc): 0 = "If database is
+full, pairing will be performed but no bonding is stored"; 1 = "New bonding
+will overwrite the oldest existing bonding"; 2 = "New bonding will
+overwrite the bonding that was used the longest time ago". The bond count
+stays 8 (#19).
+
+The old code comment said policy 0 rejects a new bond when the store is
+full. It does not: per the doc above it pairs the phone and stores nothing.
+The comment is rewritten.
+
+**Why eviction is acceptable now.** Since #42 every new bond needs someone
+at the bed's switch panel to put it into settings mode, so eviction can no
+longer be triggered by a stranger within radio range. A phone that was
+evicted has to pair again, in settings mode, like a new phone.
+
+### 2. Disconnect a phone whose pairing was refused
+
+In the Prompt V bench run (#42 "Bench result") the Android app closed the
+link itself after the rejection (`connection_closed reason=0x1013`, remote
+user terminated). Another phone or app may not, and a refused phone that
+stays connected holds one of the bed's two role slots.
+
+- In the `sl_bt_evt_sm_confirm_bonding` handler, when the window rejects a
+  request, the connection handle is recorded in `refused_pairing_conn[]`
+  (one entry per connection the stack can hold,
+  `SL_BT_CONFIG_MAX_CONNECTIONS_SUM`; it stores handles rather than being
+  indexed by them, so it does not depend on how the stack numbers handles).
+- In the `sl_bt_evt_sm_bonding_failed` handler, if that connection is
+  recorded, the firmware prints `BLE: closing conn=N - pairing refused` and
+  calls `sl_bt_connection_close(connection)`.
+- The record is cleared on `connection_closed` and on `connection_opened`
+  for that handle, and the table is emptied at system boot.
+
+**Not on the confirm_bonding event itself:** closing before the stack has
+sent the pairing failure could leave the phone without a clean error.
+**Nothing blocks (#27):** `sl_bt_connection_close()` is documented as
+asynchronous - it starts the termination and the result arrives later as
+`sl_bt_evt_connection_closed`.
+
+### Status
+
+Builds clean from the command line. **Not run on the bench.** The expected
+outcome is that a refused phone now sees `connection_closed ...
+reason=0x1016` (terminated by the local host) instead of 0x1013, unless the
+phone closes first. That is inferred from `sl_status.h`, not observed.
+Eviction (part 1) has not been observed either: it needs a full 8-bond store.

@@ -349,8 +349,12 @@ during a physical pairing window: while settings mode is active on the
 switch panel** (DECISIONS #19, implemented as DECISIONS #42). Outside the
 window, pairing/bonding requests are rejected, so a stranger within radio
 range cannot enroll. Re-pairing a phone that already has a bond is gated the
-same way; a bonded phone reconnecting is not affected. Store 8 bonds in
-NVM3.
+same way; a bonded phone reconnecting is not affected. **A refused phone is
+disconnected by the firmware** once the stack reports the pairing failure
+(DECISIONS #43), so it cannot sit on one of the two connection slots. Store 8
+bonds in NVM3; **when the store is full, a new bond overwrites the bond used
+the longest time ago** (DECISIONS #43). That is safe because every new bond
+needs the pairing window; an evicted phone pairs again in settings mode.
 
 **Advertising (fast-connect lever #1).** The board is powered from the van
 battery bank — coin-cell advertising economics do not apply. Advertise

@@ -32,6 +32,7 @@
 
 #include "app_assert.h"
 #include "gatt_db.h"
+#include "sl_bluetooth.h"            // SL_BT_CONFIG_MAX_CONNECTIONS_SUM - sizes refused_pairing_conn[]
 #include "sl_sleeptimer.h"
 
 #include "auto_level.h"              // tilt_telemetry_arm_burst() - triggers T1 and T2
@@ -192,6 +193,16 @@ static uint8_t open_connections[2] = { SLOT_EMPTY, SLOT_EMPTY };
 static uint8_t control_connection = SLOT_EMPTY;
 static uint8_t viewer_connection  = SLOT_EMPTY;
 
+// Connections whose pairing request the pairing window refused (#42), so the
+// sl_bt_evt_sm_bonding_failed handler can close them (DECISIONS.md #43). It
+// holds connection handles rather than being indexed by them, so it assumes
+// nothing about how the stack numbers its handles, and it has one entry per
+// connection the stack can hold at once. Set in confirm_bonding, cleared on
+// connection_opened and connection_closed for that handle. Filled with
+// SLOT_EMPTY at system_boot, before any connection can exist. Stack events
+// only, so main-loop context; no volatile needed.
+static uint8_t refused_pairing_conn[SL_BT_CONFIG_MAX_CONNECTIONS_SUM];
+
 static bool control_status_subscribed = false;
 static bool viewer_status_subscribed  = false;
 static uint8_t status_subscriber_count = 0;
@@ -290,6 +301,43 @@ static void track_connection_closed(uint8_t connection)
   for (uint8_t i = 0; i < 2; i++) {
     if (open_connections[i] == connection) {
       open_connections[i] = SLOT_EMPTY;
+    }
+  }
+}
+
+static void pairing_refused_mark(uint8_t connection)
+{
+  for (uint8_t i = 0; i < SL_BT_CONFIG_MAX_CONNECTIONS_SUM; i++) {
+    if (refused_pairing_conn[i] == connection) {
+      return; // already marked (the phone asked again on the same link)
+    }
+  }
+  for (uint8_t i = 0; i < SL_BT_CONFIG_MAX_CONNECTIONS_SUM; i++) {
+    if (refused_pairing_conn[i] == SLOT_EMPTY) {
+      refused_pairing_conn[i] = connection;
+      return;
+    }
+  }
+  // No free entry: cannot happen while every close clears its handle, since
+  // there is one entry per stack connection. If it did, this link is simply
+  // not closed by the firmware - the behaviour before #43.
+}
+
+static bool pairing_refused_is_marked(uint8_t connection)
+{
+  for (uint8_t i = 0; i < SL_BT_CONFIG_MAX_CONNECTIONS_SUM; i++) {
+    if (refused_pairing_conn[i] == connection) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static void pairing_refused_clear(uint8_t connection)
+{
+  for (uint8_t i = 0; i < SL_BT_CONFIG_MAX_CONNECTIONS_SUM; i++) {
+    if (refused_pairing_conn[i] == connection) {
+      refused_pairing_conn[i] = SLOT_EMPTY;
     }
   }
 }
@@ -885,9 +933,15 @@ void ble_bed_service_on_event(sl_bt_msg_t *evt)
       app_assert_status(sc);
       printf("BLE SM: configure -> 0x%04x\r\n", (unsigned)sc);
 
-      // Reject new bonds once the 8-bond store is full, rather than
-      // silently evicting an existing one.
-      sc = sl_bt_sm_store_bonding_configuration(BLE_BED_SERVICE_MAX_BONDS, 0);
+      // Bond store full (8 bonds): a new bond overwrites the one used the
+      // longest time ago - policy 2 in sl_bt_api.h's
+      // sl_bt_sm_store_bonding_configuration() doc (DECISIONS.md #43). The
+      // previous policy 0 did not reject a 9th phone: per the same doc it
+      // paired it but stored no bond for it.
+      // Eviction is safe now because since #42 every new bond needs someone
+      // at the bed's switch panel (settings mode), so a stranger cannot
+      // trigger it; a phone that was evicted pairs again in settings mode.
+      sc = sl_bt_sm_store_bonding_configuration(BLE_BED_SERVICE_MAX_BONDS, 2);
       app_assert_status(sc);
       printf("BLE SM: store_bonding_configuration -> 0x%04x\r\n", (unsigned)sc);
 
@@ -898,6 +952,9 @@ void ble_bed_service_on_event(sl_bt_msg_t *evt)
       sc = sl_bt_sm_set_bondable_mode(1);
       app_assert_status(sc);
       printf("BLE SM: set_bondable_mode(1) -> 0x%04x\r\n", (unsigned)sc);
+
+      // No connection exists yet, so no pairing has been refused (#43).
+      memset(refused_pairing_conn, SLOT_EMPTY, sizeof(refused_pairing_conn));
 
 #if BLE_BENCH_WIPE_BONDS
       sc = sl_bt_sm_delete_bondings();
@@ -924,6 +981,7 @@ void ble_bed_service_on_event(sl_bt_msg_t *evt)
     case sl_bt_evt_connection_opened_id: {
       uint8_t connection = evt->data.evt_connection_opened.connection;
       track_connection_opened(connection);
+      pairing_refused_clear(connection); // a new link on a reused handle starts unrefused (#43)
 
 #if BLE_DEBUG_SECURITY_LOG
       // bonding != 0xff here means the stack recognized this as a RESUMING
@@ -955,6 +1013,7 @@ void ble_bed_service_on_event(sl_bt_msg_t *evt)
              evt->data.evt_connection_closed.connection,
              evt->data.evt_connection_closed.reason);
 #endif
+      pairing_refused_clear(evt->data.evt_connection_closed.connection); // #43
       handle_connection_closed(evt->data.evt_connection_closed.connection);
       break;
 
@@ -978,13 +1037,31 @@ void ble_bed_service_on_event(sl_bt_msg_t *evt)
     // An sl_status_t code - see sl_status.h SL_STATUS_BT_SMP_* for
     // pairing-specific failures (e.g. 0x1203 = AUTHENTICATION_REQUIREMENTS,
     // IO-capability mismatch).
-    case sl_bt_evt_sm_bonding_failed_id:
+    //
+    // DISCONNECT A REFUSED PHONE (DECISIONS.md #43). If this connection's
+    // pairing was refused by the window below, close it here: the bed has
+    // only two role slots and a phone or app that stays connected after a
+    // refusal would hold one. Done on this event, not on confirm_bonding,
+    // so the stack has already sent the pairing failure and the phone gets a
+    // clean error first. sl_bt_connection_close() only queues the
+    // termination and returns (it does not block, #27); connection_closed
+    // follows and clears the mark.
+    case sl_bt_evt_sm_bonding_failed_id: {
+      uint8_t connection = evt->data.evt_sm_bonding_failed.connection;
 #if BLE_DEBUG_SECURITY_LOG
       printf("BLE SM: bonding_failed conn=%u reason=0x%04x\r\n",
-             evt->data.evt_sm_bonding_failed.connection,
+             connection,
              evt->data.evt_sm_bonding_failed.reason);
 #endif
+      if (pairing_refused_is_marked(connection)) {
+#if BLE_DEBUG_SECURITY_LOG
+        printf("BLE: closing conn=%u - pairing refused\r\n", connection);
+#endif
+        sc = sl_bt_connection_close(connection);
+        (void)sc; // best-effort: if the phone is already closing the link, its own connection_closed follows
+      }
       break;
+    }
 
     // Fires for every bonding attempt now that sl_bt_sm_configure()'s bit 3
     // (BONDING_REQUEST_REQUIRED) is set (DECISIONS.md #28). bonding_handle
@@ -1007,11 +1084,16 @@ void ble_bed_service_on_event(sl_bt_msg_t *evt)
       const sl_bt_evt_sm_confirm_bonding_t *cb = &evt->data.evt_sm_confirm_bonding;
       uint8_t confirm = app_in_settings_mode() ? 1 : 0;
 #if BLE_DEBUG_SECURITY_LOG
-      printf("BLE SM: confirm_bonding conn=%u (%s) -> %s\r\n",
+      printf("BLE SM: confirm_bonding conn=%u handle=0x%02x (%s) -> %s\r\n",
              cb->connection,
+             cb->bonding_handle,
              (cb->bonding_handle == SL_BT_INVALID_BONDING_HANDLE) ? "new bond" : "REPLACING existing bond",
              confirm ? "ACCEPTED (settings mode)" : "REJECTED (not in settings mode)");
 #endif
+      if (!confirm) {
+        // The bonding_failed that follows closes this link (#43).
+        pairing_refused_mark(cb->connection);
+      }
       sl_bt_sm_bonding_confirm(cb->connection, confirm);
       break;
     }
