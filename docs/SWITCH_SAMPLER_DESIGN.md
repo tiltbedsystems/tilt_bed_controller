@@ -1,5 +1,7 @@
 # Switch sampler design (one switch reader) - implementation spec
 
+Note (2026-10-18): the debounce is now 2 samples (commit 47db449); the body below is the historical design.
+
 Written by the reviewer on 2026-10-17 for the session that implements it.
 Implement as specified; where the code contradicts this document, stop and
 report it under QUESTIONS FOR REVIEW instead of improvising.

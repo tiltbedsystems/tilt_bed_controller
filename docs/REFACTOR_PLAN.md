@@ -205,6 +205,8 @@ filtering chain safety-relevant, not just diagnostics.
 13. **Settings mode has no exit.** `in_settings_mode` is set true
     (app.c:1507) and never set false — the only exit is a power cycle. If
     intentional, it deserves a comment; if not, it's a missing transition.
+    **DONE (2026-10-18, commit `dd8d069`):** a new press of BED LIGHTS exits
+    settings mode (`settings_mode_exit()`).
 
 14. **Multi-bit interrupt masks silently match nothing.** `process_inputs()`
     switches on the raw packed interrupt word; if two switches change in the

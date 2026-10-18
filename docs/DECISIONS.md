@@ -272,6 +272,8 @@ to the switch panel is what prevents a stranger within radio range from
 bonding. Up to 8 bonds stored in NVM3. All GATT characteristics require an
 encrypted, bonded link.
 
+Implemented as #42 (2026-10-18).
+
 ## 20. SDK lands on Simplicity SDK 2026.6.0 LTS at D1 — via fresh-project port, not in-place upgrade
 
 The D1 migration (#10) targets **Simplicity SDK 2026.6.0 LTS** (released
