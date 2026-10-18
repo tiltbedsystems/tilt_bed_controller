@@ -31,3 +31,10 @@ desktop.ini
 /.claude/*
 !/.claude/settings.json
 !/.claude/hooks/
+
+# Simplicity Studio-generated per-machine files (user decision on the
+# 2026-10-17_01 handoff's QUESTIONS FOR REVIEW). .projectlinkstore is
+# deliberately NOT listed: it stays tracked even though it keeps showing as
+# modified, because Studio metadata has broken this build before.
+/.projectchecksums
+/tilt_bed_controller_project.pdf
