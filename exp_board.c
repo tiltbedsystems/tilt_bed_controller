@@ -276,6 +276,28 @@ uint8_t get_motor_faults()
   return faults;
 }
 
+// Reads back the motor ENABLE bits (P0_0-P0_3 = EN_MOTOR1-4) from the output
+// register, the same register and the same transaction set_motor_on() starts
+// with. These are the EN_MOTOR1-4 lines (init_board_expander()). PWM is started
+// once at boot and never stopped (app.c), so with these low a motor is idle at
+// any duty cycle - the enable bit is what gates motion, which makes this the
+// hardware truth about "is this motor allowed to run" - unlike
+// motor_state[].motor_on, which is bookkeeping that set_all_motors_on() never
+// touches (DECISIONS.md #40). No EFM_ASSERT: see the header comment.
+bool get_motor_enables(uint8_t *enables)
+{
+  I2C_TransferReturn_TypeDef ret;
+  uint8_t cmd = EXP_CMD_OUTPUT;
+  uint8_t port0 = 0;
+
+  ret = board_exp_transaction(I2C_FLAG_WRITE_READ, &cmd, 1, &port0, 1);
+  if (ret != i2cTransferDone) {
+    return false;
+  }
+  *enables = port0 & 0x0F;
+  return true;
+}
+
 // Rate-limited, main-loop-context wrapper around get_motor_faults(). Call
 // once per app_process_action() pass; internally gates the actual I2C read
 // to once per MOTOR_FAULT_SAMPLE_INTERVAL_MS so it doesn't add a second

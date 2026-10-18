@@ -8,6 +8,7 @@
 #ifndef EXP_BOARD_H_
 #define EXP_BOARD_H_
 
+#include <stdbool.h>
 #include <stdint.h>
 
 
@@ -40,6 +41,11 @@ void set_I2C_redriver_on();
 void set_I2C_redriver_off();
 
 uint8_t get_motor_faults();
+// Reads the motor ENABLE bits (P0_0-P0_3) back from the on-board expander's output
+// register. Returns false if the I2C transfer failed; *enables is then untouched.
+// Deliberately has no EFM_ASSERT: it is called by the motion fail-safe, which must
+// survive a bus error rather than hang on it.
+bool get_motor_enables(uint8_t *enables);
 
 // Interim polled motor-fault telemetry (main-loop context) - see
 // sample_motor_faults_tick()'s comment in exp_board.c for the rate

@@ -234,6 +234,57 @@ static bed_target_t side_to_target(side_of_bed_t side)
   return BED_TARGET_HEAD; // unreachable - side_of_bed_t has exactly these 4 values
 }
 
+/*
+ * OUT-OF-BAND STATUS READS MUST NOT SWALLOW SWITCH EVENTS (DECISIONS.md #40).
+ *
+ * Reading the expander's input port clears its interrupt flag (exp_ui.c,
+ * get_ui_status()). The normal read in switch_input_tick() is the consumer of
+ * that flag: it reads the interrupt SOURCE bits first, then the status. But
+ * the double-press check and the motion fail-safe also read the status, on
+ * their own timers. If one of them lands between a switch edge and the normal
+ * read, it clears the flag, the normal read finds NO source bits, and the
+ * event is dropped. A dropped RELEASE leaves switch_held / switch_driving set
+ * and the motors running with nothing held - the unprovoked "FAILSAFE:" trip
+ * in the 732dfed bench log, and the original runaway.
+ *
+ * So every out-of-band read goes through here. If the fresh switch bits
+ * differ from the status latched at the last PROCESSED event, a change has
+ * happened that has not been processed yet; record WHICH bits so the normal
+ * read can use them if the chip no longer reports a source, and make sure the
+ * normal read runs.
+ *
+ * app_ui_status_valid: before the first processed event app_ui_status is just
+ * zero, which would read as "every switch changed".
+ */
+static bool app_ui_status_valid = false;
+static uint16_t swallowed_change_hint = 0;
+
+static uint16_t get_ui_status_out_of_band(void)
+{
+  uint16_t status = get_ui_status();
+  uint16_t changed = (status ^ app_ui_status) & SWITCH_INPUT_MASK;
+
+  if (app_ui_status_valid && (changed != 0)) {
+    bool run_read = true;
+    swallowed_change_hint |= changed;
+    sl_atomic_store(read_ui_data, run_read);
+  }
+  return status;
+}
+
+// Number of switches physically down in a status word (active low). The LED
+// bits are excluded by the mask.
+static uint8_t count_switches_down(uint16_t status)
+{
+  uint16_t down = (uint16_t)(~status) & SWITCH_INPUT_MASK;
+  uint8_t n = 0;
+  while (down != 0) {
+    n += (uint8_t)(down & 1u);
+    down >>= 1;
+  }
+  return n;
+}
+
 #if BED_BENCH_PROVOKE_RUNAWAY
 static bool     provoke_armed = false;
 static bool     provoke_all = false;
@@ -502,7 +553,8 @@ static void process_inputs()
  * run_motor_supervision() and leaves nothing that would ever stop them.
  *
  * It asks the hardware directly and nothing else: is any switch physically
- * down? Is the app commanding? Is auto-level running? Is settings mode active?
+ * down? Is any motor-enable line actually high (not motor_state[] - #40)?
+ * And, separately: Is the app commanding? Is auto-level running? Is settings mode active?
  * If all four are no and a motor is energised, that is a runaway by
  * definition - de-energise.
  *
@@ -526,14 +578,32 @@ static uint32_t failsafe_last_sample_tick = 0;
 static uint8_t  failsafe_quiet_samples = 0;
 static bool     failsafe_tripped = false; // print once, not every pass
 
+// Asks the HARDWARE: is any of the four motor-enable lines high? Not
+// motor_state[].motor_on - that is bookkeeping, and set_all_motors_on() sets
+// the outputs without touching it, so "hardware on, flags off" was invisible
+// here (DECISIONS.md #40). That is exactly the state the #38 bug class
+// produces.
+//
+// Cost: one blocking I2C transaction on sl_i2cspm_on_board per sample, i.e.
+// per FAILSAFE_SAMPLE_MS = 50 ms, and ONLY once the switch check above has
+// passed (so never while any button is down). Same order as
+// sample_motor_faults_tick() (5/s, same bus, same context), and it is
+// main-loop context, not a Bluetooth stack callback, so it is not the
+// #27/#30 mechanism.
+//
+// A FAILED read counts as "energised": this function cannot see the motors,
+// and a blind fail-safe should fail toward OFF. That cannot fight normal
+// motion on one transient error, because the caller already requires
+// FAILSAFE_CONFIRM_SAMPLES consecutive samples and has already established
+// that nothing is commanding - so the worst case of acting on a bad read is
+// de-energising motors that were meant to be off.
 static bool any_motor_energised_now(void)
 {
-  for (uint8_t i = 0; i < NUM_MOTORS; i++) {
-    if (motor_state[i].motor_on) {
-      return true;
-    }
+  uint8_t enables = 0;
+  if (!get_motor_enables(&enables)) {
+    return true;
   }
-  return false;
+  return (enables != 0);
 }
 
 void motion_failsafe_tick(void)
@@ -562,7 +632,7 @@ void motion_failsafe_tick(void)
   // physically down. The LED bits (P1_4-P1_7) are masked out: they are
   // outputs, and they are exactly what made the double-press check depend on
   // something other than the switches (#35/#38).
-  uint16_t status = get_ui_status();
+  uint16_t status = get_ui_status_out_of_band();
   bool any_switch_down = ((status & SWITCH_INPUT_MASK) != SWITCH_INPUT_MASK);
 
   if (any_switch_down) {
@@ -719,14 +789,26 @@ void switch_input_tick(void)
 
           // Read the switch board input ports and process accordingly
           get_ui_status();
-          app_ui_status_new = get_ui_status();
+          app_ui_status_new = get_ui_status_out_of_band();
 
 //          printf("Initial UI Interrupt Source = %d, Status = %d \r\n", app_ui_interrupt, app_ui_status);
 //          printf("New UI Interrupt Source = %d, Status = %d \r\n", app_ui_interrupt_new, app_ui_status_new);
 
-          if (app_ui_status_new == app_ui_status){
+          // A double press is TWO PHYSICAL SWITCHES DOWN, read now from the
+          // hardware (DECISIONS.md #40). It used to be "status unchanged
+          // since the last latched interrupt", which is not a statement about
+          // switches at all: any extra interrupt after the LED changed (contact
+          // bounce on the press) re-latched the status with the LED already on,
+          // and anything that put the LED back to its latched state (auto-level
+          // ending with the button still held) did the same, so a single held
+          // button matched its own latch. Two switches down cannot be produced
+          // by one button, however it bounces.
+          if (count_switches_down(app_ui_status_new) >= 2){
 #if !BED_CAPTURE_MOTOR_CURRENTS
               printf("Double Press Error\r\n");
+              printf("  switch word 0x%04X, %u switches down\r\n",
+                     (unsigned)(app_ui_status_new & SWITCH_INPUT_MASK),
+                     (unsigned)count_switches_down(app_ui_status_new));
 #endif
               set_dual_motors_off(HEAD);
               set_dual_motors_off(FOOT);
@@ -768,9 +850,20 @@ void switch_input_tick(void)
       // Get source of switch interrupt
       app_ui_interrupt = get_ui_interrupt();
 
+      // The chip reports no source if an out-of-band status read cleared its
+      // flag first (#40). Fall back to the bits that read saw change.
+      if ((app_ui_interrupt == 0) && (swallowed_change_hint != 0)) {
+#if !BED_CAPTURE_MOTOR_CURRENTS
+          printf("UI: recovered swallowed switch change 0x%04X\r\n", swallowed_change_hint);
+#endif
+          app_ui_interrupt = swallowed_change_hint;
+      }
+      swallowed_change_hint = 0;
+
       // Read the switch board input ports and process accordingly
       get_ui_status();
       app_ui_status = get_ui_status();
+      app_ui_status_valid = true;
 //       printf("\r\n");
 //       printf("UI Interrupt Source = %d, Status = %d \r\n", app_ui_interrupt, app_ui_status);
 

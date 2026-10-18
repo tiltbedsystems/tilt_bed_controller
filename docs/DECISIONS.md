@@ -1646,3 +1646,81 @@ Two gaps, both closed:
 Both flag states build clean. **The fail-safe is still unproven** - the
 provocation exists but has not been run. That is the whole point of the next
 bench session.
+
+## 40. The fail-safe reads motor hardware; double press = two switches down; out-of-band reads must not swallow events
+
+Date: 2026-10-17. Prompted by the 732dfed provocation bench log.
+
+### What the bench showed
+
+- UP HEAD provocation: fail-safe caught it 11/11, 213-216 ms.
+- UP ALL provocation: caught 0/5. The motors ran until DOWN ALL was pressed.
+- One `FAILSAFE:` line with no `PROVOKE:` before it, after a real UP HEAD hold.
+- 18 `Double Press Error` lines, none from two buttons pressed together.
+
+### 1. The fail-safe now reads the hardware for the motors
+
+`any_motor_energised_now()` read `motor_state[].motor_on`, which is
+bookkeeping. `set_all_motors_on()` writes the expander outputs and sets no
+flags, so "hardware on, flags off" was invisible to the check - the #38 bug
+class it exists to catch. It now reads the EN_MOTOR1-4 bits (P0_0-P0_3) of the
+on-board expander output register via `get_motor_enables()`, only after the
+switch check passes, once per `FAILSAFE_SAMPLE_MS`.
+
+- Why the enable bit is what gates motion: PWM is started once at boot and
+  never stopped (`app.c`), and the bed is stationary at idle, so a running
+  PWM alone does not move a motor. (Inferred from code and behaviour; no
+  schematic is in the repo.)
+- A failed read counts as "energised" (fail toward OFF). The existing
+  3-sample confirm and the "nothing is commanding" precondition mean one
+  transient cannot fight normal motion.
+- Confirm window and sample rate unchanged. The provocation is unchanged;
+  UP ALL calling `set_all_motors_on()` alone is now the hardware-on/flags-off
+  test.
+
+### 2. Double press is now "two physical switches down"
+
+The old check compared the status latched at the last interrupt with a fresh
+read and called a match a double press. That is not a statement about
+switches. Two ways it matches on a single press, both from the code:
+
+- Any extra interrupt after the LED changed (contact bounce on the press)
+  re-latches the status with the LED already on.
+- Anything that returns the LED to its latched state while the button is
+  still held. The log's last two lines are this: `Exit auto-level`, then two
+  errors, with the auto-level button held.
+
+No debounce exists in firmware (grep) and none is documented in hardware. The
+check now counts down switches in a fresh read (`SWITCH_INPUT_MASK`) and fires
+at 2 or more. One button cannot produce that, however it bounces. It still
+catches a second button pressed while the first is held, at the next 50 ms
+sample. It also prints the switch word, so a false positive would be visible.
+
+Not fixed: a bounce on a RELEASE or press can still produce a brief
+spurious stop and restart, because the main input path has no debounce.
+
+### 3. Out-of-band status reads must not swallow switch events
+
+`get_ui_status()` clears the expander's interrupt flag (comment at
+`exp_ui.c:263`). The double-press check and the fail-safe both call it on their
+own timers. If one lands between a switch edge and the normal read, the normal
+read finds no interrupt source and the event is dropped. A dropped release
+leaves `switch_held`/`switch_driving` set and the motors running with nothing
+held. That matches the unprovoked `FAILSAFE:` and the original runaway.
+
+Candidates (a) stale flags with hardware off and (b) the limit-switch
+re-energise were both checked. (b) cannot fire on a HEAD hold: it needs
+`motors_temp_off`, which only an ALL move sets. (a) cannot survive a normal
+release: `app_move_stop()` clears the flags and de-energises together.
+
+Every out-of-band read now goes through `get_ui_status_out_of_band()`, which
+records which switch bits changed since the last processed event. The normal
+read uses them if the chip reports no source, and prints
+`UI: recovered swallowed switch change 0x....` when it does. That print is
+the evidence: if the hypothesis is wrong it will never appear.
+
+### Status
+
+Builds clean with the bench flag at 0 and at 1. **None of this has been run on
+the bench.** The swallowed-event mechanism is inferred from code and the
+`exp_ui.c` comment, not from the datasheet or a capture.
