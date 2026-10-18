@@ -110,8 +110,8 @@ The one-switch-reader sampler (`switch_input.c`). Build with
 `(bounces N)` is whatever the switch does (0 for a clean contact).
 
 - [ ] 3b.1 Single press and release (e.g. UP HEAD, mask 0x8000), about 1 s
-      hold: `SW: 0x8000 down (bounces 0)` ~20-30 ms after pressing and the
-      motor moves; `SW: 0x8000 up (bounces 0)` ~20-30 ms after releasing and
+      hold: `SW: 0x8000 down (bounces 0)` ~10-20 ms after pressing and the
+      motor moves; `SW: 0x8000 up (bounces 0)` ~10-20 ms after releasing and
       the motor stops. No `FAILSAFE:`, no `Double Press Error`, no
       `Unrecognized switch mask`, no `SW: ... failed`.
 - [ ] 3b.2 Two buttons pressed together from idle (e.g. UP HEAD + UP LEFT,

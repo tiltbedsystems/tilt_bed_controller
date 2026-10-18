@@ -20,7 +20,6 @@
 #include "exp_board.h"
 #include "motor_current_functions.h"
 #include "settings_mode.h"
-#include "switch_input.h"
 
 /*
  * Tracks whether the in-progress move is an ALL-type move, independent of

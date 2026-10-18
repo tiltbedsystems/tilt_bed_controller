@@ -51,7 +51,7 @@
 // Switch sampler timing (DECISIONS.md #41). Milliseconds via sleeptimer, never
 // loop passes (#2).
 #define SWITCH_SAMPLE_MS            10
-#define SWITCH_DEBOUNCE_SAMPLES     3   // 3 identical reads = >=20 ms stable
+#define SWITCH_DEBOUNCE_SAMPLES     2   // 2 identical reads = >=10 ms stable
 #define SWITCH_READ_FAIL_LIMIT      5   // 50 ms of failed reads -> all released
 #define SWITCH_STATE_STALE_MS       100 // fail-safe distrusts older data
 #define SWITCH_SAMPLER_DIAG         1   // bench prints; pre-ship: 0
@@ -947,6 +947,12 @@ void switch_input_tick(void)
           // switch_driving naming a button process_outputs would still
           // energise on, which is motion with bed_control never consulted.
           clear_switch_panel_state();
+          // Release the switches' half of the #36 latch, for the same reason
+          // as in motion_failsafe_tick(): clearing switch_held above means the
+          // held buttons' later releases find no match and never reach
+          // bed_move_stop(), so without this the switches' half of the latch
+          // could stay set until some later press/release.
+          bed_note_source_released(BED_SOURCE_SWITCHES);
           active_switch = OFF;
           // Reset motor readings
           reset_ignore_data_points_count();

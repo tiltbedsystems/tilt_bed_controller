@@ -1747,7 +1747,8 @@ about 200 ms later (five times). There was no debounce anywhere.
   the double-press check and the fail-safe use the sampler's debounced state.
 - **Sampling session.** Starts on the UI_INT edge flag or, at idle, on a level
   check of the UI_INT pin (so a missed edge still starts one). During a session
-  both boards are read every 10 ms and each bit is debounced (3 identical reads).
+  both boards are read every 10 ms and each bit is debounced (2 identical reads;
+  3 until 2026-10-18 - see "Bench result" below).
   The session ends only when everything is released, stable and no interrupt
   arrived since the last read.
 - **One event per bit, releases first.** Accepted edges are handed to
@@ -1791,7 +1792,8 @@ running continuously and blocking sleep while it is).
 
 ### Behaviour changes to expect
 
-- Release is now seen after the debounce, about 20-30 ms after the contact opens,
+- Release is now seen after the debounce, about 10-20 ms after the contact opens
+  (20-30 ms with the original 3-sample debounce, until 2026-10-18),
   so a move stops that much later than before (+ up to one sample period).
 - Double-press detection is continuous rather than 50 ms after the initial press.
 - `SWITCH_SAMPLER_DIAG` is 1: `SW:` lines print for every accepted edge, with a
