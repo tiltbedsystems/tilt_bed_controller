@@ -168,6 +168,16 @@ static void clear_switch_panel_state(void)
   switch_driving = OFF;
 }
 
+// The same, for callers outside this file - without exposing the variables.
+// settings_mode_exit() needs it: the BED LIGHTS press that entered settings
+// mode set switch_held/switch_driving in normal mode, and its release was
+// handled by the settings branch, which never clears them. Left stale, every
+// button would be dead after the exit.
+void switch_input_clear_panel_state(void)
+{
+  clear_switch_panel_state();
+}
+
 // Maps each single-side switch mask to its active_switch_t value, motor side, and direction
 static const struct {
   uint16_t mask;

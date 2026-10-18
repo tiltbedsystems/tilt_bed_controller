@@ -128,7 +128,8 @@ void app_reset_auto_level_timer(void);
 void set_all_LED_off(void);
 void auto_level_stop_blink_LED(led_color_t LED_color);
 
-// Settings-mode LED helper - non-static: called by settings_mode.c
+// Settings-mode LED helpers - non-static: called by settings_mode.c
 void fast_blink_LED(led_color_t LED_color);
+void fast_stop_blink_LED(led_color_t LED_color);
 
 #endif  // APP_H

@@ -341,6 +341,21 @@ void fast_blink_LED(led_color_t LED_color){
   }
 }
 
+// Single LED blink FAST stop - mirrors auto_level_stop_blink_LED(), but for
+// LED_200ms_timer. LED_timer_timeout is shared with the 500 ms collision blink
+// timer. This is only called on settings-mode exit, when nothing should be
+// driving motors (settings mode never energises them and BLE motion commands
+// are refused in it), so no collision blink should be running; if one were,
+// clearing the flag would only delay its next toggle by one 500 ms period.
+// Non-static: called by settings_mode.c, see app.h
+void fast_stop_blink_LED(led_color_t LED_color){
+
+  sl_sleeptimer_stop_timer(&LED_200ms_timer);
+  set_LED_off(LED_color);
+  LED_timer_timeout = false;
+  single_LED_on[LED_color] = false;
+}
+
 // sl_button_on_change() moved to switch_input.c
 
 // Resets both the on-board and switch board I2C GPIO expanders simultaneously

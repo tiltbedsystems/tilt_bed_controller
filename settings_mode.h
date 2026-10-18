@@ -4,6 +4,7 @@
  * The "settings mode" subsystem: holding BED_LIGHTS 5 s enters it; while in
  * it, AUTO_LEVEL-hold stores/erases the custom zero angle and UP_ALL/
  * DOWN_ALL-hold steps the collision-sensitivity ladder, writing to NVM3.
+ * A later, separate press of BED_LIGHTS exits it (settings_mode_exit()).
  * Relocated from app.c on C4 commit 3 (Jul 2026) - pure relocation, no
  * behavior change. in_settings_mode is defined here now (was app.c); app.c's
  * own tick/dispatch logic still reads it via this header, same as
@@ -36,5 +37,12 @@ void settings_mode_process_outputs(void);
 // BED_LIGHTS released early (process_inputs()) and a double-press error
 // during the entry hold (the double-press-check block).
 void settings_mode_cancel_entry(void);
+
+// Leaves settings mode: stops both settings timers (no NVM3 write), turns the
+// motors off, stops the amber fast blink and restores amber to the under-bed
+// lights state, turns red/green/blue off, and clears the panel bookkeeping
+// (switch_held, switch_driving, active_switch, the switches' half of the #36
+// latch). Called on a new BED_LIGHTS press while in settings mode.
+void settings_mode_exit(void);
 
 #endif /* SETTINGS_MODE_H_ */

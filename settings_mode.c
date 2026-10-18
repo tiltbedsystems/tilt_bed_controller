@@ -15,9 +15,12 @@
 
 #include "app.h"
 #include "auto_level.h"
+#include "bed_actions.h"
+#include "bed_control.h"
 #include "bed_settings.h"
 #include "bed_types.h"
 #include "debug_capture.h"
+#include "exp_board.h"
 #include "exp_ui.h"
 #include "motor_current_functions.h"
 #include "switch_input.h"
@@ -108,6 +111,45 @@ void settings_mode_cancel_entry(void)
   timeout_5000ms = false;
 }
 
+// Leaves settings mode and returns the panel to a clean normal-mode idle.
+// Triggered by a NEW press of BED LIGHTS while in settings mode (see
+// settings_mode_process_outputs()).
+void settings_mode_exit(void)
+{
+  in_settings_mode = false;
+#if !BED_CAPTURE_MOTOR_CURRENTS
+  printf("Settings mode: exit\r\n");
+#endif
+
+  // Abandon any store/erase/sensitivity hold in progress: nothing half-done
+  // survives the exit, and nothing is written to NVM3 here.
+  sl_sleeptimer_stop_timer(&handle_2000ms_timer);
+  timeout_2000ms = false;
+  sl_sleeptimer_stop_timer(&handle_5000ms_timer);
+  timeout_5000ms = false;
+
+  // Settings mode is excluded from the motion fail-safe, so leave nothing
+  // energised behind it.
+  set_all_motors_off();
+
+  // Amber stops fast-blinking and goes back to showing the under-bed lights;
+  // the three settings LEDs go off.
+  fast_stop_blink_LED(LED_AMBER);
+  if (app_lights_on()) {
+    set_LED_on(LED_AMBER);
+  }
+  set_LED_off(LED_RED);
+  set_LED_off(LED_GREEN);
+  set_LED_off(LED_BLUE);
+
+  // The entry press set switch_held/switch_driving in normal mode and its
+  // release was handled by the settings branch, which never clears them.
+  // Without this every button is dead after the exit.
+  switch_input_clear_panel_state();
+  active_switch = OFF;
+  bed_note_source_released(BED_SOURCE_SWITCHES);
+}
+
 // Finds the ladder rung matching the current raise/lower margins, or -1 if mismatched
 static int8_t find_sensitivity_index(void)
 {
@@ -194,7 +236,12 @@ void settings_mode_process_outputs(void)
 
     case SWITCH_BED_LIGHTS:
       if (switch_pressed && (active_switch == OFF)){
-        active_switch = SWITCH_BED_LIGHT_VALUE;
+        // A NEW press of BED LIGHTS exits settings mode. The press that
+        // entered it was delivered in normal mode, before in_settings_mode
+        // was set, and is never delivered again however long it is held; its
+        // release arrives with switch_pressed false and takes the branch
+        // below. So only a later press can get here.
+        settings_mode_exit();
       }
       else if (active_switch == SWITCH_BED_LIGHT_VALUE){
 

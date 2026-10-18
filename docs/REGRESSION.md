@@ -227,8 +227,13 @@ pitch, all actuators clear of limits.
 - [ ] ⚡ 7.7 Persistence: power cycle; boot print shows the values stored in
       7.2/7.4/7.5
 - [ ] 7.8 Motor buttons in settings mode do NOT move motors
-- [ ] 7.9 Exit: power cycle returns to normal mode (settings mode has no
-      soft exit — known, REFACTOR_PLAN P3.13)
+- [ ] 7.9 Exit: after releasing the entry hold, press BED_LIGHTS once.
+      "Settings mode: exit" prints; amber stops fast-blinking and shows the
+      under-bed lights state (on if the lights are on, off if not); red,
+      green and blue off; the under-bed lights themselves do not change.
+      Holding that press does not re-enter settings mode, and its release
+      does nothing. Afterwards one press of each button works normally.
+      A power cycle also exits.
 - [ ] ⚡ BLE link stays up (no disconnect) through settings mode entry,
       zero-level store/erase, and sensitivity adjustment
 

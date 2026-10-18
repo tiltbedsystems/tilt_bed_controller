@@ -43,6 +43,10 @@ bool switch_sampler_active(void);
 uint16_t switch_sampler_down(void);
 bool switch_state_fresh(void);
 
+// Clears the physical panel's own bookkeeping (switch_held, switch_driving -
+// DECISIONS.md #37). For settings_mode_exit(), whose entry press left them set.
+void switch_input_clear_panel_state(void);
+
 // Unconditional motion fail-safe (DECISIONS.md #38). Call once per
 // app_process_action(). De-energises the motors whenever the sampler's
 // debounced state says no switch is down (stale counts as none), the app is not
