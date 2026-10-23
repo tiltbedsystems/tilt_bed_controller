@@ -234,6 +234,33 @@ pitch, all actuators clear of limits.
       Holding that press does not re-enter settings mode, and its release
       does nothing. Afterwards one press of each button works normally.
       A power cycle also exits.
+- [ ] 7.10 Pairing window (DECISIONS #42/#43). Build with
+      `BLE_DEBUG_SECURITY_LOG` 1. Note the phone model in the test record.
+  - [ ] 7.10a Bonded phone reconnects, bed NOT in settings mode:
+        `connection_opened conn=N bonding=0xNN` (not `0xff`), then
+        `security_mode=1`, and no `confirm_bonding` line. The app connects.
+  - [ ] 7.10b Refusal: delete the bond on the phone, bed NOT in settings
+        mode, connect from the app: `confirm_bonding ... -> REJECTED (not in
+        settings mode)`, `bonding_failed ... reason=0x1205`, `BLE: closing
+        conn=N - pairing refused`, then exactly one `connection_closed
+        conn=N` (0x1022 on the 2026-10-18 S23 run; 0x1016 or 0x1013 are also
+        possible depending on which side finishes first). The phone shows a
+        pairing failure, not a hang.
+  - [ ] 7.10c Acceptance in settings mode: enter settings mode (7.1), connect
+        from the app: `confirm_bonding ... -> ACCEPTED (settings mode)`,
+        then `bonded conn=N`. The app connects.
+  - [ ] 7.10d Reconnect after exit: exit settings mode (7.9), close and
+        reopen the app: `connection_opened ... bonding=0xNN`,
+        `security_mode=1`, no `confirm_bonding` line, and the app can drive
+        the bed.
+- [ ] 7.11 STOP during a settings hold (DECISIONS #44). In settings mode,
+      hold UP ALL: `SW: 0x0001 down`, `2 second timer start`. Before 2 s,
+      press STOP in the app (it gets Command Result ACCEPTED; no PuTTY line
+      for STOP). Keep holding past 2 s, then release: no `Writing values to
+      NVM3...`, no `Settings mode: exit`, no ladder LED, amber keeps
+      fast-blinking. Hold UP ALL again: the step happens only after a full
+      2 s. Repeat for DOWN ALL and for AUTO LEVEL (no `Writing values to
+      NVM3...` after the STOP; the next AUTO LEVEL hold needs the full 2 s).
 - [ ] ⚡ BLE link stays up (no disconnect) through settings mode entry,
       zero-level store/erase, and sensitivity adjustment
 
@@ -249,6 +276,22 @@ below record the DECISIONS #42 checks the user ran alongside 7.9.
 | Pairing refused (phone bond deleted, not in settings mode) | `-> REJECTED (not in settings mode)`, `bonding_failed reason=0x1205`, then the phone closed the link (`connection_closed reason=0x1013`); phone showed `GATT_AUTH_FAIL` (status 137) |
 | Pairing in settings mode | `-> ACCEPTED (settings mode)`, then `bonded` |
 | 7.1-7.8, BLE link item | not separately recorded |
+
+**Recorded result, 2026-10-18 (Prompt W firmware: code of `840d7b8`,
+`BLE_DEBUG_SECURITY_LOG` 1, phone Samsung Galaxy S23 SM-S911U, log
+`prompt_w_bench.log`; recorded 2026-10-23, full figures in DECISIONS #43 and
+#44 "Bench result").** VERIFIED (user's bench run). Items 7.10 and 7.11 were
+added after this run, on 2026-10-23; the rows below are the checks the user
+ran that those items now cover.
+
+| Item | Result |
+|---|---|
+| Boot | `store_bonding_configuration -> 0x0000` (policy 2 accepted; eviction not observed) |
+| 7.10a | `connection_opened conn=1 bonding=0x01`, `security_mode=1`, no `confirm_bonding` |
+| 7.10b | `-> REJECTED (not in settings mode)`, `bonding_failed reason=0x1205`, `closing conn=2 - pairing refused`, one `connection_closed conn=2 reason=0x1022` (`SL_STATUS_BT_CTRL_LL_RESPONSE_TIMEOUT`, link-layer procedure timeout; 0x1016 had been predicted) |
+| 7.10c | `-> ACCEPTED (settings mode)`, then `bonded conn=3` |
+| 7.10d | not in this log (Prompt V row above) |
+| 7.11 (UP ALL only) | two UP ALL holds with no NVM3 write (STOP pressed in the app: user's report; STOP prints nothing); the next full hold wrote 350/250; DOWN ALL then wrote 550/275 |
 
 ## 8. Bed lights
 

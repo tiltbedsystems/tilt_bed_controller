@@ -1989,3 +1989,104 @@ outcome is that a refused phone now sees `connection_closed ...
 reason=0x1016` (terminated by the local host) instead of 0x1013, unless the
 phone closes first. That is inferred from `sl_status.h`, not observed.
 Eviction (part 1) has not been observed either: it needs a full 8-bond store.
+
+### Bench result (2026-10-18)
+
+Recorded 2026-10-23 from the user's bench run of the Prompt W firmware (the
+code of `840d7b8`; the bench steps named `9ba0ca3`, which adds docs only;
+the log itself does not identify the commit), `BLE_DEBUG_SECURITY_LOG` 1.
+Log: `_03-Software/PuTTY Logs/prompt_w_bench.log` (179 lines). **The phone
+was a Samsung Galaxy S23 (SM-S911U)** for this run, not the S10 used for
+Prompt V (#42). Every line number below was checked against the log.
+**VERIFIED (user's bench run).**
+
+- **Bond store policy (part 1):** line 12, `BLE SM: store_bonding_configuration
+  -> 0x0000`. The stack accepted policy 2. Eviction itself was **not**
+  observed: it needs a full 8-bond store.
+- **Bonded phone reconnects** (lines 14-19): `connection_opened conn=1
+  bonding=0x01`, `security_mode=0` then `security_mode=1`, `cccd_seed`, and
+  no `confirm_bonding` line.
+- **Refused pairing is closed by the bed (part 2)** (lines 25-32, phone-side
+  bond deleted, bed not in settings mode): `confirm_bonding conn=2
+  handle=0x01 (REPLACING existing bond) -> REJECTED (not in settings mode)`,
+  `bonding_failed conn=2 reason=0x1205`, `BLE: closing conn=2 - pairing
+  refused`, then one `connection_closed conn=2 reason=0x1022`.
+  - **0x1022, not the predicted 0x1016.** `sl_status.h:286`:
+    `SL_STATUS_BT_CTRL_LL_RESPONSE_TIMEOUT`, "Connection terminated due to
+    link-layer procedure timeout." (0x1016, `sl_status.h:274`, is
+    `..._CONNECTION_TERMINATED_BY_LOCAL_HOST`; 0x1013, `:271`, is
+    `..._REMOTE_USER_TERMINATED`, the Prompt V result.) So the link did end
+    after the bed's `sl_bt_connection_close()` (the `closing conn` line comes
+    first, and there is no 0x1013), but the controller reported it as a
+    link-layer procedure timeout rather than a clean local termination.
+    Which procedure timed out is not visible in the log (no timestamps).
+    One reading, **ASSERTED**: the phone did not acknowledge the bed's
+    termination in time (for example because it was tearing the link down
+    itself after the pairing failure). Either way the refused phone no
+    longer holds a connection, which is what part 2 is for.
+- **Pairing in settings mode** (lines 33-46): BED LIGHTS held (settings-mode
+  entry prints nothing), then `confirm_bonding conn=3 handle=0x01
+  (REPLACING existing bond) -> ACCEPTED (settings mode)`, `security_mode=1`,
+  `cccd_seed`, `bonded conn=3`. `Settings mode: exit` follows at line 48.
+- **Not in this log:** a reconnect after the settings-mode exit (conn=3
+  stays up to the end of the log). Prompt V showed it (#42, item d).
+
+The settings-hold results from the same run are recorded under #44.
+
+## 44. STOP in settings mode cancels any hold in progress and stays in settings mode
+
+Date: 2026-10-18 (decision and implementation), recorded 2026-10-23. User
+decision (Prompt W, decision 3).
+
+### Decision
+
+A STOP while settings mode is active abandons any hold in progress - a
+sensitivity step (UP ALL / DOWN ALL, 2 s) or a zero-angle store/erase
+(AUTO LEVEL, 2 s / 5 s) - writes nothing to NVM3, and **leaves the bed in
+settings mode**. The next hold starts from zero and needs its full 2 s.
+
+### Implementation (`840d7b8`)
+
+`settings_mode_cancel_holds()` (`settings_mode.c:120-126`) stops both
+settings timers and clears both timeout flags. It is called from
+`app_stop_all()` when `in_settings_mode` is true (`bed_actions.c:221-228`).
+Without it the hold's timer kept running after `app_stop_all()` cleared
+`active_switch`, and its timeout acted on the next hold the moment it
+started.
+
+`app_stop_all()` has three callers, all in `ble_bed_service.c`: the STOP_ALL
+opcode (`:535`), dead-man watchdog expiry (`:505`), and the control-phone
+disconnect stop (`:883`). So the cancel runs on **every full stop**, not only
+on the app's STOP button. **The reviewer accepts this:** cancelling a settings
+hold on any full stop is correct. (In practice the watchdog path is hard to
+reach in settings mode, because motion opcodes are refused there before they
+arm the watchdog - Prompt W handoff, section b.)
+
+The same commit also makes the UP ALL, DOWN ALL and AUTO LEVEL release
+branches clear a timeout that fired just before the release (they call
+`settings_mode_cancel_holds()`), and requires BED LIGHTS to be physically
+down for the entry hold. Those are bug fixes in the same area, not part of
+this decision.
+
+### Bench result (2026-10-18)
+
+Same run and log as #43's bench result (`prompt_w_bench.log`, Galaxy S23).
+**VERIFIED (user's bench run)**, with one part resting on the user's report:
+
+- **STOP during an UP ALL hold wrote nothing** (lines 54-59): two UP ALL
+  holds, each `SW: 0x0001 down (bounces 0)`, `2 second timer start`,
+  `SW: 0x0001 up (bounces 0)`, with no `Writing values to NVM3...` and no
+  `Settings mode: exit`. STOP itself prints nothing, by design, and the log
+  has no timestamps, so **that STOP was pressed in the app during these holds
+  and that they were held past 2 s is the user's report**, not something the
+  log alone shows.
+- **The next full hold stepped one rung** (lines 60-69): `Writing values to
+  NVM3...`, both `Successfully stored ...` lines, `Stored Raise Sensitivity
+  is: 350`, `Stored Lower Sensitivity is: 250` - from the loaded 550/275
+  (lines 9-10) to the HIGH rung. The two `2 second timer start` lines before
+  the write and one after it are the existing pattern: the expired one-shot
+  is restarted in the same tick (`settings_mode.c:407-412`) before the write
+  stops it (`:489`), then restarted on the next tick.
+- **DOWN ALL restored 550/275** (lines 70-79): `Stored Raise Sensitivity is:
+  550`, `Stored Lower Sensitivity is: 275`.
+- `Settings mode: exit` at line 81 on a new BED LIGHTS press.

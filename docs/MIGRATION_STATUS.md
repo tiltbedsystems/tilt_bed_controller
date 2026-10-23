@@ -32,14 +32,19 @@ Following SDK_PORTING_GUIDE.md, gates in order:
       scoped as the hard gate BEFORE any BLE glue (DECISIONS #20); in
       practice, BLE Stage B (below) proceeded ahead of this gate since it
       cannot drive a motor and gave a live testbed for two BLE-drop bugs
-      that have since been found and fixed (DECISIONS #26/#27). Stage C
-      (the motor-driving command path) remains hard-gated on this pass.
-      Test record prepped: `docs/REGRESSION_RECORD_D1.md` — still blank,
-      not yet run. REGRESSION.md itself was updated this session to require
-      a phone connected and subscribed throughout the pass (see below), so
-      REGRESSION_RECORD_D1.md's checklist copy (taken before that update)
-      should be refreshed from the current REGRESSION.md before this pass
-      is run.
+      that have since been found and fixed (DECISIONS #26/#27). Test record
+      prepped: `docs/REGRESSION_RECORD_D1.md` — still blank, never run, and
+      it can no longer be run as scoped (it was the pre-BLE isolation pass;
+      BLE code now exists — see that file's own pointer).
+      **Corrected 2026-10-23:** the gate actually applied to Stage C was the
+      post-Stage-B full pass recorded in
+      `docs/REGRESSION_RECORD_PRE_STAGEC.md` (2026-07-19, commit `af369f2`,
+      **Debug** build, phone subscribed throughout; recorded in `29fdf0d`).
+      Stage C was then built (see "BLE status" below). **Still open:** a
+      full REGRESSION.md pass on the *current* firmware (which now includes
+      the Stage C, sampler and pairing-window items) has not been run, and
+      the **Release-config confirmation pass is still owed before Stage C
+      ships** (`REGRESSION_RECORD_PRE_STAGEC.md`'s own header note).
 
 ## BLE status (BLE_GATT_DESIGN.md)
 
@@ -48,11 +53,21 @@ Following SDK_PORTING_GUIDE.md, gates in order:
       **Bench-verified**: bonding works, Bed Status telemetry updates live
       while subscribed, and auto-level no longer drops the link (both
       BLE-drop bugs were the same root cause — DECISIONS #26/#27).
-- [ ] **Stage C** — Command characteristic → motors + dead-man watchdog
-      (BLE_GATT_DESIGN.md §4-5). **Not started. Hard-gated on the Phase 6
-      REGRESSION.md pass above**, which must now be run with a phone
-      connected and subscribed throughout (REGRESSION.md's own updated
-      preamble).
+- [x] **Stage C** — Command characteristic → motors + dead-man watchdog
+      (BLE_GATT_DESIGN.md §4-5). **Built and bench-tested** (corrected
+      2026-10-23; this line previously said "Not started"). Record:
+      DECISIONS #34 (built, `ab12d09`, 2026-08-02); the first bench run
+      found the 10 Hz app-move stutter, fixed in `a22406f` (2026-08-02,
+      #35, fix bench-confirmed per #36); auto-level became hold-to-run and
+      watchdogged in `5351aef` (2026-08-04, #36); later bench-driven fixes
+      #37-#41 (2026-08-04 → 2026-10-18). Pairing window (#42, `944f19e`,
+      2026-10-18) and bond-store policy + closing refused pairings (#43,
+      `c6ee6b0`, 2026-10-18) are bench-verified on 2026-10-18 (#42/#43
+      "Bench result"). **Still open:** the watchdog's stall case and an
+      intermittent `WATCHDOG_STOP` during app auto-level holds are under
+      investigation (2026-10-23 diagnostics); the full REGRESSION.md pass on
+      current firmware and the Release-config pass (Phase 6 above) have not
+      been run.
 
 ## The docs, and what changed recently
 
@@ -66,9 +81,9 @@ Following SDK_PORTING_GUIDE.md, gates in order:
   above). Written for the GUI path; note the IDE is now VS Code, not the old
   in-Studio "Simplicity IDE".
 - **BLE_GATT_DESIGN.md** — the D1 BLE protocol contract (services,
-  characteristics, packet layouts, watchdog, roles, OTA). Stage B (§3/§6/§8
-  minus Stage C's command path) is implemented and bench-verified; Stage C
-  (§4/§5, the command→motor path) is not started — see "BLE status" above.
+  characteristics, packet layouts, watchdog, roles, OTA). Stage B (§3/§6/§8)
+  and Stage C (§4/§5, the command→motor path) are both implemented and
+  bench-tested — see "BLE status" above (corrected 2026-10-23).
 - **REFACTOR_PLAN.md** — the A–D plan. Phases A–C are complete on the old
   project; D1 is this migration. The D1 note has been updated to reflect #25
   and the fresh-project migration.
@@ -98,7 +113,11 @@ Following SDK_PORTING_GUIDE.md, gates in order:
 4. **Grep for hardcoded `TIMER0`/`TIMERx`** references during the port and
    flag any (part of the #25 change).
 5. **Regression before Stage C.** DECISIONS #20's original rule (no BLE glue
-   before the full REGRESSION.md pass) held for the motor-driving command
-   path: Stage C is hard-gated on Phase 6, per "BLE status" above. Stage B
-   (telemetry-only, no command path — cannot drive a motor either way) was
-   allowed to proceed ahead of Phase 6 in practice, and is bench-verified.
+   before the full REGRESSION.md pass) was not followed as written. Stage B
+   (telemetry-only, cannot drive a motor) proceeded ahead of Phase 6 and is
+   bench-verified. Stage C was gated instead on the post-Stage-B full pass in
+   `REGRESSION_RECORD_PRE_STAGEC.md` (2026-07-19, Debug), and has since been
+   built and bench-tested (DECISIONS #34-#43; corrected 2026-10-23 — this
+   item previously said Stage C was hard-gated and not started). What is
+   still owed: a full REGRESSION.md pass on current firmware, and the
+   Release-config confirmation pass before Stage C ships.

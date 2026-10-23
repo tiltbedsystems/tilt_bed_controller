@@ -52,11 +52,11 @@ understanding, not just correctness:
   that used to require a hand-edited config file — if you ever find
   yourself wanting to hand-edit a generated file, that is a signal to
   stop and ask, not a shortcut to take.
-- **No BLE glue in this phase.** The radio stays dormant until the
-  migrated firmware passes the full `docs/REGRESSION.md` pass on hardware
-  (DECISIONS #20). Don't add `sl_bt_on_event` handling, GATT logic, or
-  anything beyond what the stock "Bluetooth – SoC Empty" sample already
-  provides, even if it looks like a natural next step.
+- **BLE status.** BLE is built and in use: Stage B (telemetry) and Stage C
+  (the app drives the bed, DECISIONS #34), the pairing window (#42) and the
+  bond/refusal handling (#43). DECISIONS.md is the authoritative record.
+  (`docs/MIGRATION_STATUS.md` still describes Stage C as not started and is
+  being corrected.) BLE work is done only when a prompt asks for it.
 - **Keep the `bed_` module prefix.** Only cosmetic "Totem"/"Totem
   Sleep"→"Tilt Bed"/"Tilt Bed Systems" string changes are in scope; don't
   rename modules, functions, or the prefix.
