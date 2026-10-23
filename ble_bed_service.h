@@ -26,6 +26,21 @@
 #include "sl_bt_api.h"
 #include "bed_status.h"
 
+// Bench diagnostics for dead-man watchdog stops (the app's "Connection
+// stalled" message, Command Result WATCHDOG_STOP). When 1, ble_bed_service.c
+// records refresh and Command-write ticks and app.c's app_process_action()
+// records its own pass times; one short block is printed on each watchdog
+// stop, and the connection_parameters print adds latency and supervision
+// timeout. Measures only: nothing blocks and nothing prints per pass. Set to
+// 0 before shipping.
+#define BLE_DEBUG_WATCHDOG_LOG 1
+
+#if BLE_DEBUG_WATCHDOG_LOG
+// Called first and last in app_process_action(), to time each main-loop pass.
+void ble_bed_service_debug_pass_begin(void);
+void ble_bed_service_debug_pass_end(void);
+#endif
+
 // Packs a bed_status_t snapshot into the 20-byte Bed Status characteristic
 // wire format (BLE_GATT_DESIGN.md #6), little-endian, matching gattdb_
 // bed_status_len exactly. tilt_fresh is passed in separately rather than

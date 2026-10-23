@@ -553,6 +553,10 @@ void app_process_action(void)
 {
   bool local_heartbeat;
 
+#if BLE_DEBUG_WATCHDOG_LOG
+  ble_bed_service_debug_pass_begin(); // pass timing for the watchdog-stop print; measures only
+#endif
+
   // If there is a collision --> stop all motors, then flash all LEDs a few times
   // Once this sequence is done (which will take a few seconds), then collision can be
   // set back to false and motor operation can resume
@@ -745,6 +749,10 @@ void app_process_action(void)
 
   bed_control_tick();
   ble_bed_service_tick();
+
+#if BLE_DEBUG_WATCHDOG_LOG
+  ble_bed_service_debug_pass_end();
+#endif
 }
 
 /**************************************************************************//**

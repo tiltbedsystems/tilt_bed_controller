@@ -245,6 +245,49 @@ static volatile bool move_watchdog_expired = false;  // set in timer ISR context
 static bool    move_watchdog_armed = false;
 static uint8_t last_move_seq = 0;                    // echoed on WATCHDOG_STOP
 
+#if BLE_DEBUG_WATCHDOG_LOG
+// Watchdog-stop diagnostics (BLE_DEBUG_WATCHDOG_LOG, ble_bed_service.h).
+// Sleeptimer ticks only; printed solely by service_move_watchdog() on expiry.
+// Everything here is written from main-loop context (the stack callback runs
+// from the super loop too - see process_pending_command()), so no volatile.
+#define WD_DIAG_GAPS 8
+static uint32_t wd_diag_rx_tick = 0;              // last Command write into pending_command[] (stack callback)
+static uint32_t wd_diag_processing_rx_tick = 0;   // receive tick of the write being processed now
+static uint32_t wd_diag_refresh_tick = 0;         // last move_watchdog_arm()
+static uint32_t wd_diag_refresh_rx_tick = 0;      // receive tick of the write that did that arm
+static uint8_t  wd_diag_refresh_opcode = 0;
+static uint16_t wd_diag_gap_ms[WD_DIAG_GAPS];     // ring buffer: ms between consecutive refreshes
+static uint8_t  wd_diag_gap_next = 0;
+static uint8_t  wd_diag_gap_count = 0;
+// Main-loop pass timing since the last arm/refresh, fed by app.c.
+static uint32_t wd_diag_pass_entry_tick = 0;
+static uint32_t wd_diag_pass_exit_tick = 0;
+static bool     wd_diag_have_exit = false;
+static uint32_t wd_diag_passes = 0;
+static uint32_t wd_diag_longest_pass_ticks = 0;
+static uint32_t wd_diag_longest_between_ticks = 0; // pass exit -> next pass entry (sleep + stack)
+
+void ble_bed_service_debug_pass_begin(void)
+{
+  uint32_t now = sl_sleeptimer_get_tick_count();
+  if (wd_diag_have_exit && (now - wd_diag_pass_exit_tick) > wd_diag_longest_between_ticks) {
+    wd_diag_longest_between_ticks = now - wd_diag_pass_exit_tick;
+  }
+  wd_diag_pass_entry_tick = now;
+}
+
+void ble_bed_service_debug_pass_end(void)
+{
+  uint32_t now = sl_sleeptimer_get_tick_count();
+  if ((now - wd_diag_pass_entry_tick) > wd_diag_longest_pass_ticks) {
+    wd_diag_longest_pass_ticks = now - wd_diag_pass_entry_tick;
+  }
+  wd_diag_passes++;
+  wd_diag_pass_exit_tick = now;
+  wd_diag_have_exit = true;
+}
+#endif
+
 // The app-sourced move currently believed to be running, so a repeat with a
 // DIFFERENT target/dir can be turned into MOVE_STOP + MOVE_START (#4).
 static bool            app_move_active = false;
@@ -416,6 +459,30 @@ static void move_watchdog_callback(sl_sleeptimer_timer_handle_t *handle, void *d
 
 static void move_watchdog_arm(void)
 {
+#if BLE_DEBUG_WATCHDOG_LOG
+  uint32_t now = sl_sleeptimer_get_tick_count();
+  if (move_watchdog_armed) {
+    // A refresh: keep the gap since the previous one.
+    uint32_t gap_ms = sl_sleeptimer_tick_to_ms(now - wd_diag_refresh_tick);
+    wd_diag_gap_ms[wd_diag_gap_next] = (gap_ms > 0xFFFF) ? 0xFFFF : (uint16_t)gap_ms;
+    wd_diag_gap_next = (uint8_t)((wd_diag_gap_next + 1) % WD_DIAG_GAPS);
+    if (wd_diag_gap_count < WD_DIAG_GAPS) {
+      wd_diag_gap_count++;
+    }
+  } else {
+    // A fresh arm starts a new hold: earlier gaps belong to an earlier hold.
+    wd_diag_gap_next = 0;
+    wd_diag_gap_count = 0;
+  }
+  wd_diag_refresh_tick = now;
+  wd_diag_refresh_rx_tick = wd_diag_processing_rx_tick;
+  // Still the write being processed: only called from process_pending_command(),
+  // and no stack event can be dispatched between its snapshot and here.
+  wd_diag_refresh_opcode = pending_command[CMD_OFS_OPCODE];
+  wd_diag_passes = 0;
+  wd_diag_longest_pass_ticks = 0;
+  wd_diag_longest_between_ticks = 0;
+#endif
   move_watchdog_armed = true;
   move_watchdog_expired = false;
   sl_sleeptimer_restart_timer(&move_watchdog_timer,
@@ -498,12 +565,39 @@ static void service_move_watchdog(void)
   // No MOVE_START repeat for MOVE_WATCHDOG_MS - the app is gone, the phone
   // slept, or the link stalled. Full clean stop, then tell the app why if it
   // is still there to hear it.
+#if BLE_DEBUG_WATCHDOG_LOG
+  // Snapshot before the stop, so the stop's own I2C time is not counted.
+  uint32_t now = sl_sleeptimer_get_tick_count();
+  uint32_t since_refresh_ms = sl_sleeptimer_tick_to_ms(now - wd_diag_refresh_tick);
+  uint32_t since_rx_ms      = sl_sleeptimer_tick_to_ms(now - wd_diag_rx_tick);
+  uint32_t this_pass_ms     = sl_sleeptimer_tick_to_ms(now - wd_diag_pass_entry_tick);
+#endif
   move_watchdog_cancel();
   app_move_active = false;
   app_auto_level_active = false;   // hold-to-run auto-level is watchdogged too (#36)
   note_app_stopped_commanding();
   app_stop_all();
   send_command_result(control_connection, last_move_seq, CMD_RESULT_WATCHDOG_STOP);
+#if BLE_DEBUG_WATCHDOG_LOG
+  // Printed after the stop and the result, so the print cannot delay either.
+  printf("BLE: WATCHDOG STOP op=0x%02x seq=%u: %lu ms since last refresh (limit %u ms)\r\n",
+         wd_diag_refresh_opcode, last_move_seq,
+         (unsigned long)since_refresh_ms, (unsigned)MOVE_WATCHDOG_MS);
+  printf("  last write received %lu ms ago (op=0x%02x seq=%u); last refresh received->processed %lu ms\r\n",
+         (unsigned long)since_rx_ms, pending_command[CMD_OFS_OPCODE], pending_command[CMD_OFS_SEQ],
+         (unsigned long)sl_sleeptimer_tick_to_ms(wd_diag_refresh_tick - wd_diag_refresh_rx_tick));
+  printf("  since last refresh: %lu passes, longest pass %lu ms, longest between passes %lu ms, this pass %lu ms so far\r\n",
+         (unsigned long)wd_diag_passes,
+         (unsigned long)sl_sleeptimer_tick_to_ms(wd_diag_longest_pass_ticks),
+         (unsigned long)sl_sleeptimer_tick_to_ms(wd_diag_longest_between_ticks),
+         (unsigned long)this_pass_ms);
+  printf("  last %u refresh gaps, oldest first (ms):", (unsigned)wd_diag_gap_count);
+  for (uint8_t i = 0; i < wd_diag_gap_count; i++) {
+    uint8_t idx = (uint8_t)((wd_diag_gap_next + WD_DIAG_GAPS - wd_diag_gap_count + i) % WD_DIAG_GAPS);
+    printf("%s%u", (i == 0) ? " " : ",", (unsigned)wd_diag_gap_ms[idx]);
+  }
+  printf("\r\n");
+#endif
 }
 
 /*******************************************************************************
@@ -554,6 +648,9 @@ static void process_pending_command(void)
   uint8_t len  = pending_command_len;
   uint8_t conn = pending_command_conn;
   command_pending = false;
+#if BLE_DEBUG_WATCHDOG_LOG
+  wd_diag_processing_rx_tick = wd_diag_rx_tick;
+#endif
 
   // A short write has no trustworthy seq field. Echo 0 rather than a byte
   // that was never sent; the app sees REJECTED_INVALID either way.
@@ -1104,8 +1201,17 @@ void ble_bed_service_on_event(sl_bt_msg_t *evt)
     // no-security, which the check below correctly ignores.
     case sl_bt_evt_connection_parameters_id: {
       const sl_bt_evt_connection_parameters_t *params = &evt->data.evt_connection_parameters;
+#if BLE_DEBUG_WATCHDOG_LOG
+      // sl_bt_api.h: interval x 1.25 ms; latency = connection intervals the
+      // peripheral may skip; timeout = supervision timeout x 10 ms. Latency
+      // above 0 would delay the phone's Command writes.
+      printf("BLE: connection_parameters conn=%u interval=%u latency=%u timeout=%u security_mode=%u\r\n",
+             params->connection, params->interval, params->latency, params->timeout,
+             params->security_mode);
+#else
       printf("BLE: connection_parameters conn=%u interval=%u security_mode=%u\r\n",
              params->connection, params->interval, params->security_mode);
+#endif
       if (params->security_mode != sl_bt_connection_mode1_level1) {
         if (assign_role_if_needed(params->connection)) {
           // The resumed-bond path: sm_bonded does not fire here (see the
@@ -1177,6 +1283,9 @@ void ble_bed_service_on_event(sl_bt_msg_t *evt)
       pending_command_len  = av->value.len;
       pending_command_conn = av->connection;
       command_pending = true;
+#if BLE_DEBUG_WATCHDOG_LOG
+      wd_diag_rx_tick = sl_sleeptimer_get_tick_count(); // a tick read, not work
+#endif
       break;
     }
 
