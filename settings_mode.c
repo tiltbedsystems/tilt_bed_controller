@@ -272,9 +272,10 @@ void settings_mode_tick(void)
 {
   // switch_pressed is only the direction of the LAST edge delivered, for any
   // button, so the entry hold also requires BED LIGHTS to be physically down
-  // in the sampler's debounced state (#41).
+  // in the sampler's debounced state (#41) - and that state to be fresh, so
+  // stale data counts as "not down", as it does for the motion fail-safe.
   if ((switch_pressed == true) && (active_switch == SWITCH_BED_LIGHT_VALUE) && (!in_settings_mode)
-      && ((switch_sampler_down() & SWITCH_BED_LIGHTS) != 0)){
+      && switch_state_fresh() && ((switch_sampler_down() & SWITCH_BED_LIGHTS) != 0)){
     sl_sleeptimer_is_timer_running(&handle_5000ms_timer, &is_5000ms_timer_running);
 
     if (!is_5000ms_timer_running){
