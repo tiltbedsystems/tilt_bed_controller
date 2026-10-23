@@ -1321,3 +1321,46 @@ Closes the *means* to test #38's assumption A4. **It does not close A4.**
 - ...that `app_stop_all()` is STOP_ALL-only: it is also the watchdog-expiry and control-disconnect stop, and on all three it now cancels a settings hold when in settings mode.
 - ...that the phone-side GATT_AUTH_FAIL text came from the PuTTY log — it was reported by the user.
 - ...that the 8-bond store's current contents are known: bonds persist across reflashes and nobody has counted them.
+
+## 2026-10-23 — Prompt Y: watchdog-stop diagnostics, Stage C status, Prompt W bench record
+
+**Commits**
+
+- `f6614c8` — docs only: the reviewer's CLAUDE.md "BLE status" bullet (committed as made); MIGRATION_STATUS.md Stage C corrected to built and bench-tested (#34-#43, with dates/commits), Phase 6 note corrected (the Stage C gate actually used was REGRESSION_RECORD_PRE_STAGEC, 2026-07-19, Debug); DECISIONS #43 "Bench result (2026-10-18)" for Prompt W; new DECISIONS #44 (STOP in settings mode cancels holds, stays in settings mode); REGRESSION.md items 7.10a-d (pairing window) and 7.11 (STOP during a settings hold), unchecked, plus a Prompt W recorded-result table; commits the Prompt Y prompt file.
+- `17073a3` — `settings_mode_tick()` entry condition also requires `switch_state_fresh()`.
+- `c7d743d` — `BLE_DEBUG_WATCHDOG_LOG` (ble_bed_service.h, default 1): refresh-gap ring buffer (8), Command-write receive tick, main-loop pass timing via `ble_bed_service_debug_pass_begin/end()` in `app_process_action()`, a four-line `BLE: WATCHDOG STOP ...` block on each watchdog stop, and `latency=`/`timeout=` in the connection_parameters print.
+- The handoff `docs/handoffs/fw_HANDOFF_2026-10-23_01_watchdog-diagnostics-and-followups.md` and this entry are committed together after these.
+
+**VERIFIED**
+
+- Prompt W bench run (user's, 2026-10-18, Galaxy S23 SM-S911U, `PuTTY Logs/prompt_w_bench.log`, 179 lines, read line by line): `store_bonding_configuration -> 0x0000` (line 12); bonded reconnect with no `confirm_bonding` (14-19); refusal `REJECTED` -> `bonding_failed 0x1205` -> `closing conn=2 - pairing refused` -> one `connection_closed reason=0x1022` (29-32); `ACCEPTED (settings mode)` -> `bonded conn=3` (43-46); two UP ALL holds with no NVM3 write (54-59); next full hold wrote 350/250 (60-67); DOWN ALL wrote 550/275 (70-77). That STOP was pressed in the app during lines 54-59 is the user's report: STOP prints nothing and the log has no timestamps.
+- 0x1022 = `SL_STATUS_BT_CTRL_LL_RESPONSE_TIMEOUT`, "Connection terminated due to link-layer procedure timeout" (`sl_status.h:286`). 0x1016 (predicted) is `:274`.
+- `sl_bt_evt_connection_parameters_t` has `latency` (connection intervals the peripheral may skip) and `timeout` (x 10 ms) (`sl_bt_api.h:6951`, `:6953`).
+- The prompt's premise holds in code: "Step 1" prints only after `app_auto_level_start()` resets `first_print[]` (`bed_actions.c:159-162`), and the app path calls it only when `app_auto_level_active` is false (`ble_bed_service.c` AUTO_LEVEL_START case), which only STOP_ALL, AUTO_LEVEL_STOP, disconnect and watchdog expiry clear. (A user release-and-repress would also print it; the new block tells the two apart.)
+- SDK I2CSPM in 2026.6.0 passes `SL_I2CSPM_TRANSFER_TIMEOUT` 300000 to `sl_i2c_*_blocking()` whose timeout is in **milliseconds** (`sl_i2cspm.c:48,132`; `sl_i2c.h:353`) — a hung bus could block a pass for up to 300 s. Both I2C buses are standard mode, 100 kbit/s (`config/sl_i2cspm_*_config.h:49`). VCOM is 115200 baud, blocking per character (`sl_iostream_usart.c:259-263`).
+- `app_is_ok_to_sleep()` is evaluated once on entry to sleep; after that an application interrupt returns to the main loop (`sl_power_manager.c:263,348`; `autogen/sl_power_manager_handler.c:77-116`).
+- Builds: baseline, after A, after B, after C with the flag at 1, at 0 (temporary edit, reverted) and at 1 again — all exit 0, no warnings or errors (`-Wall -Wextra`). Image after C: text 244596, data 780, bss 72480. `BED_BENCH_PROVOKE_RUNAWAY` 0, `BLE_BENCH_WIPE_BONDS` 0.
+
+**ASSERTED-but-untested**
+
+- That the diagnostics print what the handoff section D predicts, and that they change no behaviour (they only read ticks and write statics; nothing has run).
+- That B does not change a normal 5 s settings entry (fresh data in a normal hold).
+- The C5 timing estimates (bit-time arithmetic at 100 kbit/s, not measured): `set_LED_on/off()` ~15 ms each with the re-driver not held; `app_stop_all()` during auto-level ~135 ms of LED I2C; the new stop print ~30 ms of UART. No path found on the Step 1 auto-level loop that blocks anywhere near 300 ms under normal I2C conditions.
+- That the CPU may sleep during app-driven Step 1 (all four vetoes false: no motor flag, sampler idle, motor-enable shadow 0 after `app_apply_auto_level_start_outputs()`, no tilt burst), whereas a physical AUTO LEVEL hold keeps the sampler active and so free-runs. Whether the BLE stack itself vetoes sleep is not known (closed library).
+- The 0x1022 reading (phone did not acknowledge the bed's terminate in time) — one plausible explanation, not shown by the log.
+
+**Open**
+
+- Bench: section D of the handoff — a normal app auto-level hold, a deliberate watchdog stop, and the extended connection_parameters line. **Turning the phone's Bluetooth off probably does NOT produce a watchdog stop** (clean disconnect, handled by the disconnect path, which cancels the watchdog first) — see QUESTIONS.
+- REGRESSION.md 7.10d (reconnect after exit) not in the Prompt W log; 7.10/7.11 for DOWN ALL and AUTO LEVEL not run.
+- QUESTIONS for the reviewer (handoff f): the extra "longest between passes" field; the BT-off test; B's wording vs. what it does; app Step 1 vs physical Step 1 pass rate; the 300 s I2C timeout; the `bed_control.c:73` comment.
+- `BLE_DEBUG_WATCHDOG_LOG` and `SWITCH_SAMPLER_DIAG` are both 1 (pre-ship 0). `.projectlinkstore` still modified, never committed.
+
+**The next session must NOT assume**
+
+- ...that the watchdog stops are understood: nothing is known yet beyond the log pattern; the diagnostics exist to find out.
+- ...that a WATCHDOG STOP block's "last write received" is the over-the-air arrival time: it is when the stack dispatched the event in the super loop.
+- ...that "longest pass" covers the stack: it times `app_process_action()` only; the "between passes" figure is sleep plus `sl_main_process_action()`.
+- ...that 0x1016 is what a refused pairing closes with: on the S23 it was 0x1022.
+- ...that the Prompt W log shows STOP being pressed: that part is the user's report.
+- ...that REGRESSION_RECORD_D1.md can still be run: it was the pre-BLE pass and BLE code now exists.
