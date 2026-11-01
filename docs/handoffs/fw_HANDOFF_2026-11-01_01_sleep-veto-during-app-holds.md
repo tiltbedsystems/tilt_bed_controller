@@ -2208,6 +2208,6 @@ No build produced a warning or an error.
   `bed_control.c`; the first round of SDK/config reads for part C) is not
   reproduced in full where it was not captured in the session log. The
   excerpts in d.1 were re-run for every claim in sections b.3 and e. The
-  failed commands are in d.5. Commands that only edited scratch files for
+  failed commands are in d.4. Commands that only edited scratch files for
   this handoff are not reproduced.
 - `SWITCH_SAMPLER_DIAG` and `BLE_DEBUG_WATCHDOG_LOG` are both 1 (pre-ship 0).
