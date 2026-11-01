@@ -1364,3 +1364,69 @@ Closes the *means* to test #38's assumption A4. **It does not close A4.**
 - ...that 0x1016 is what a refused pairing closes with: on the S23 it was 0x1022.
 - ...that the Prompt W log shows STOP being pressed: that part is the user's report.
 - ...that REGRESSION_RECORD_D1.md can still be run: it was the pre-BLE pass and BLE code now exists.
+
+## 2026-11-01 — Record: 2026-11-01 auto-level stall bench, reviewer rulings on Prompt Y (Prompt AA part A)
+
+A record entry, committed with Prompt AA's commit A (docs only). The
+session's own handoff entry follows separately, at the end of the session.
+
+**2026-11-01 bench — VERIFIED (user's bench run)**: desk bed, firmware
+`c945146`, iPhone with app TestFlight build `e22e4b9`, log
+`PuTTY Logs/autolevel_stall_bench.log` (183 lines, read line by line).
+
+- Six `BLE: WATCHDOG STOP` blocks, lines 28, 53, 58, 63, 122, 127, all
+  `op=0x03`. In every one: 300-301 ms since the last refresh and the last
+  write received 301 ms ago with the same seq (nothing reached the
+  application for 300 ms); received->processed 0-1 ms, longest pass 2-17 ms
+  (bed not busy); 23-39 passes, longest between passes 27-28 ms (CPU
+  sleeping between passes); bunched refresh gaps (`180,0,0,0,207,0,148,28`
+  line 61; `20,2,1,1,112` line 66; `19,1,0,0,83` line 130).
+- Every stop fell in an app auto-level stretch with no motor on: Step 1, or
+  the pause after an axis finished (line 28 follows `ROLL Leveled
+  successfully...`). None with a motor running, none on the physical
+  controller. App MOVE holds never stalled (user's report).
+- The app's Hold diagnostics show a START every 100-103 ms, max gap
+  102-103 ms, err 0 (user's report, app side). Same symptom on the Tilt Van
+  bed and with a Galaxy S23 (user's report).
+- **The reviewer's reading is a hypothesis, not a finding:** while the CPU
+  sleeps, the link sometimes misses the phone's packets, which are retried
+  and arrive in a burst; sleep-clock accuracy or EM2 wake timing is a
+  candidate. Prompt AA commit B tests it.
+- iPhone connection parameters: `interval=24 latency=0`, initial
+  `timeout=72`, then `timeout=100` after the bed's request (lines 13-16).
+- iPhone pairing refusal (lines 155-158, and again 163-166): `REJECTED (not
+  in settings mode)`, `bonding_failed 0x1205`, `closing conn=N - pairing
+  refused`, `connection_closed reason=0x1016` (the bed closed it). The
+  iPhone showed "CBATTErrorDomain Code=15 Encryption is insufficient" (user's
+  report). Acceptance in settings mode at lines 173-180.
+- Two phones connected; the second could not control the bed (user's report;
+  DECISIONS #34 viewer behaviour).
+- The `Tripped on steady!` collision trip in the Prompt W log (lines
+  146-152) was benign (user's report). Closes Prompt Y QUESTIONS 9.
+
+Recorded in DECISIONS #43 "Bench result (2026-11-01, iPhone)" and REGRESSION.md
+§6 and §7 recorded-result tables.
+
+**Reviewer's rulings on Prompt Y's QUESTIONS (handoff
+`fw_HANDOFF_2026-10-23_01`, section f):**
+
+1. Keep fields B ("longest between passes") and T ("this pass so far") and
+   the last-write op/seq in the WATCHDOG STOP block.
+2. No deliberate-stall bench step needed.
+3. No change to the settings-mode entry: stale data blocking completion is
+   sufficient.
+4. (App-driven Step 1 sleeps, physical does not.) Addressed by Prompt AA
+   (sleep veto during app holds).
+5. The 300 s I2CSPM timeout (`SL_I2CSPM_TRANSFER_TIMEOUT` 300000 passed as
+   milliseconds, SDK 2026.6.0) is a **pre-ship item for its own prompt**. The
+   ruling says to add it "to the pre-ship list wherever that list lives"; no
+   single pre-ship list exists in this repo (Prompt AA handoff, QUESTIONS).
+   Until one does, the known pre-ship items are: `SWITCH_SAMPLER_DIAG` -> 0
+   (`switch_input.c:57`); `BLE_DEBUG_WATCHDOG_LOG` -> 0
+   (`ble_bed_service.h`); the Release-config confirmation pass
+   (MIGRATION_STATUS.md, Phase 6); the I2CSPM 300 s timeout.
+6. Fix the stale comment at `bed_control.c:73` in Prompt AA commit B
+   (comment only).
+7. Keep the Stage C box ticked in MIGRATION_STATUS.md.
+8. (`app_stop_all()` costs ~135 ms of LED I2C during auto-level.) No change
+   now.

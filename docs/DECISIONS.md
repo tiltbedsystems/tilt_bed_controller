@@ -2033,6 +2033,31 @@ Prompt V (#42). Every line number below was checked against the log.
 
 The settings-hold results from the same run are recorded under #44.
 
+### Bench result (2026-11-01, iPhone)
+
+Recorded 2026-11-01. The user's bench run on the desk bed, firmware
+`c945146` (the code of `c7d743d`), `BLE_DEBUG_SECURITY_LOG` 1, phone an
+**iPhone** running the app's TestFlight build `e22e4b9`. Log:
+`_03-Software/PuTTY Logs/autolevel_stall_bench.log` (183 lines). Line numbers
+below were checked against the log. **VERIFIED (user's bench run)**, except
+where marked as the user's report.
+
+- **Refusal, iPhone** (lines 151-158, bed not in settings mode):
+  `confirm_bonding conn=2 handle=0x02 (REPLACING existing bond) -> REJECTED
+  (not in settings mode)`, `bonding_failed conn=2 reason=0x1205`, `BLE:
+  closing conn=2 - pairing refused`, `connection_closed conn=2
+  reason=0x1016` - `SL_STATUS_BT_CTRL_CONNECTION_TERMINATED_BY_LOCAL_HOST`
+  (`sl_status.h:274`), the value #43 predicted. The phone retried once and
+  got the same sequence (lines 159-166, conn=3, again 0x1016). So the close
+  code depends on the phone: 0x1022 on the Galaxy S23 (2026-10-18), 0x1016 on
+  the iPhone. The iPhone showed "CBATTErrorDomain Code=15 Encryption is
+  insufficient" (user's report; not in the PuTTY log).
+- **Acceptance in settings mode, iPhone** (lines 167-180): BED LIGHTS held
+  (167-172; entry prints nothing), `connection_opened conn=4 bonding=0x02`,
+  `confirm_bonding conn=4 handle=0x02 (REPLACING existing bond) -> ACCEPTED
+  (settings mode)`, `security_mode=1`, `cccd_seed`, `bonded conn=4
+  bonding=0x02 security_mode=1`. `Settings mode: exit` at line 182.
+
 ## 44. STOP in settings mode cancels any hold in progress and stays in settings mode
 
 Date: 2026-10-18 (decision and implementation), recorded 2026-10-23. User

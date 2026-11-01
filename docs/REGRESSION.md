@@ -211,6 +211,31 @@ pitch, all actuators clear of limits.
       (DECISIONS.md #26) only manifested on a sustained multi-second move,
       so a quick/near-level test is not sufficient coverage for this check
 
+**Recorded result, 2026-11-01 (firmware `c945146`, `BLE_DEBUG_WATCHDOG_LOG`
+1, desk bed, iPhone with app TestFlight build `e22e4b9`, log
+`autolevel_stall_bench.log`).** VERIFIED (user's bench run). **App-driven
+auto-level FAILS: intermittent watchdog stops** (the app's "Connection
+stalled - movement stopped").
+
+| Check | Result |
+|---|---|
+| Connection parameters (iPhone) | `interval=24 latency=0 timeout=72` on connect, then `timeout=100` after the bed's request (lines 13, 15-16; same at 152/154, 160/162, 174/176) |
+| WATCHDOG STOP blocks | six: lines 28, 53, 58, 63, 122, 127, all `op=0x03` (AUTO_LEVEL_START) |
+| Since last refresh / last write received | 300-301 ms / 301 ms, with the **same seq** as the last refresh in all six: nothing reached the application for 300 ms |
+| Received->processed, longest pass | 0-1 ms; 2-17 ms: the bed was not busy |
+| Passes, longest between passes | 23-39 passes in the 300 ms, longest gap between passes 27-28 ms: the CPU was sleeping between passes (a free-running loop makes hundreds of passes) |
+| Refresh gaps before the stop | bunched, e.g. `180,0,0,0,207,0,148,28` (line 61), `20,2,1,1,112` (line 66), `19,1,0,0,83` (line 130): writes arriving late, then several in the same millisecond |
+| Where the stops fell | every one in a stretch of an app auto-level hold with no motor on: Step 1 (lines 52-53, 57-58, 62-63, 121-122, 126-127) and the pause after an axis finishes (line 28 follows `ROLL Leveled successfully...`, line 27). None while a motor ran, none on the physical controller |
+| App side | the app's Hold diagnostics for the same holds show a START every 100-103 ms (max gap 102-103 ms, err 0) (user's report) |
+| Elsewhere | the same symptom on a second bed (Tilt Van) and with a Galaxy S23 (user's report) |
+| Completed runs | auto-level still completed on later attempts (e.g. lines 67-85, 94-112, 131-149) |
+
+The reviewer's reading, **a hypothesis, not a finding**: while the CPU
+sleeps the link sometimes misses the phone's packets, which are then retried
+and delivered in a burst (a sleep-clock accuracy or EM2 wake-up timing issue
+being a candidate). Tested by keeping the CPU awake during app holds
+(Prompt AA commit B).
+
 ## 7. Settings mode
 
 - [ ] ⚡ 7.1 Hold BED_LIGHTS 5 s: amber LED fast-blinks — settings mode active
@@ -292,6 +317,19 @@ ran that those items now cover.
 | 7.10c | `-> ACCEPTED (settings mode)`, then `bonded conn=3` |
 | 7.10d | not in this log (Prompt V row above) |
 | 7.11 (UP ALL only) | two UP ALL holds with no NVM3 write (STOP pressed in the app: user's report; STOP prints nothing); the next full hold wrote 350/250; DOWN ALL then wrote 550/275 |
+
+**Recorded result, 2026-11-01 (firmware `c945146`, desk bed, iPhone with
+app TestFlight build `e22e4b9`, log `autolevel_stall_bench.log`; full figures
+in DECISIONS #43 "Bench result (2026-11-01, iPhone)").** VERIFIED (user's
+bench run), except where marked as the user's report.
+
+| Item | Result |
+|---|---|
+| 7.10a | `connection_opened conn=1 bonding=0x02`, `security_mode=1`, no `confirm_bonding` (lines 12-17) |
+| 7.10b | twice (lines 151-158, 159-166): `-> REJECTED (not in settings mode)`, `bonding_failed reason=0x1205`, `closing conn=N - pairing refused`, one `connection_closed reason=0x1016` each; iPhone showed "CBATTErrorDomain Code=15 Encryption is insufficient" (user's report) |
+| 7.10c | `-> ACCEPTED (settings mode)`, then `bonded conn=4` (lines 173-180) |
+| 7.10d | not in this log |
+| Two phones | a second phone connected but could not control the bed (user's report; DECISIONS #34's viewer role - not in this log) |
 
 ## 8. Bed lights
 
