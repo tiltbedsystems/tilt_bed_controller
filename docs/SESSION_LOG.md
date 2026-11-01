@@ -1430,3 +1430,40 @@ Recorded in DECISIONS #43 "Bench result (2026-11-01, iPhone)" and REGRESSION.md
 7. Keep the Stage C box ticked in MIGRATION_STATUS.md.
 8. (`app_stop_all()` costs ~135 ms of LED I2C during auto-level.) No change
    now.
+
+## 2026-11-01 — Prompt AA: sleep veto during app holds, hold-end line, sleep-clock report
+
+**Commits**
+
+- `0993ee9` — A, docs only: 2026-11-01 stall bench record (REGRESSION.md §6 and §7, DECISIONS #43 iPhone section) and the record entry above with the reviewer's rulings on Prompt Y's QUESTIONS; commits the Prompt AA prompt file.
+- `75b0a61` — B: `app_is_ok_to_sleep()` vetoes sleep while `ble_bed_service_app_hold_active()` (= `move_watchdog_armed`); `BLE: hold end ...` line behind `BLE_DEBUG_WATCHDOG_LOG`; DECISIONS #45; `bed_control.c:73` comment; REGRESSION.md 6.9.
+- The handoff `docs/handoffs/fw_HANDOFF_2026-11-01_01_sleep-veto-during-app-holds.md` and this entry are committed together after these.
+
+**VERIFIED**
+
+- Start state matched the prompt: HEAD `c945146` = `origin/main` after `git fetch`.
+- The bench log (`autolevel_stall_bench.log`, 183 lines) matches every figure in the prompt's Evidence section.
+- `move_watchdog_armed` is set only in `move_watchdog_arm()` (`ble_bed_service.c:515`, called at `:790` MOVE_START and `:830` AUTO_LEVEL_START) and cleared only in `move_watchdog_cancel()` (`:535`, called at `:582` collision, `:615` expiry, `:666` STOP_ALL, `:778` MOVE_START force-stopped, `:799` MOVE_STOP, `:817` fresh AUTO_LEVEL_START, `:838` AUTO_LEVEL_STOP, `:1022` disconnect stop). Both functions are `static`; the switch path never arms it.
+- Clock configuration (part C, all cited in the handoff): LF clock = LFRCO, default precision (`config/sl_clock_manager_tree_config.h:78,181,203`; `config/sl_clock_manager_oscillator_config.h:132,297`), identical to the SDK's BGM220SC22HNA module default (the SDK's BGM220PC22HNA default uses LFXO). Sleeptimer = RTCC on this part. In this SDK, LFRCO without high precision reports 0xFFFF ppm (`em_cmu.c:2618-2645`), and `sl_btctrl_init.c:289-298` adds an EM1 requirement when the reported accuracy exceeds 500 ppm, unless a flag that no visible source sets is set.
+- Builds: baseline, after A, B with the flag at 1, at 0 (temporary, reverted) and at 1 again, after B — all exit 0, no warnings or errors. Text 244988 B. Host test `test/bed_control_test.c` (links `bed_control.c`): 30 PASS, `0 check(s) failed`.
+
+**ASSERTED-but-untested**
+
+- That B1 removes the stalls. It keeps the loop in EM0 during holds; whether the stalls were caused by sleeping is the hypothesis under test.
+- That the hold-end line prints as handoff section D predicts (between-passes ~0-1 ms).
+- That the device never entered EM2 on the bench (depends on the closed `sl_btctrl_init_config()` not setting `SL_BTCTRL_CONFIG_FLAG_USE_INACCURATE_SLEEP_CLOCK`). If true, the "missed in EM2" reading cannot be literally right; the CPU slept in EM1.
+- DECISIONS #45's estimates of the averaging-window change (from #29's measured ~630 passes/s and the bench's ~77-130 passes/s).
+
+**Open**
+
+- Bench: REGRESSION.md 6.9 (10 app auto-level holds) with the hold-end line; handoff section D.
+- QUESTIONS for the reviewer (handoff f): no pre-ship list exists; the SCA/EM1 finding vs the EM2 hypothesis; a one-line boot print of the sleep-clock accuracy to confirm it; LFRCO high-precision as a configurator change (not made); two-source inhibit ends in a WATCHDOG_STOP result (pre-existing).
+- Pre-ship: `BLE_DEBUG_WATCHDOG_LOG` and `SWITCH_SAMPLER_DIAG` -> 0; Release-config pass; I2CSPM 300 s timeout. `.projectlinkstore` still modified, never committed.
+
+**The next session must NOT assume**
+
+- ...that the stalls are fixed: B1 is unrun.
+- ...that the device sleeps in EM2: per the SDK code it is probably held at EM1 by the Bluetooth controller.
+- ...that "last write received" is over-the-air arrival: it is when the stack dispatched the event.
+- ...that a pre-ship list file exists: it does not.
+- ...that 0x1016 or 0x1022 is "the" refused-pairing close code: it depends on the phone (iPhone 0x1016, S23 0x1022).
