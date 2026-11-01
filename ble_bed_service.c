@@ -266,12 +266,31 @@ static bool     wd_diag_have_exit = false;
 static uint32_t wd_diag_passes = 0;
 static uint32_t wd_diag_longest_pass_ticks = 0;
 static uint32_t wd_diag_longest_between_ticks = 0; // pass exit -> next pass entry (sleep + stack)
+// Whole-hold figures for the "hold end" line, reset on a fresh arm.
+static uint16_t wd_diag_hold_refreshes = 0;
+static uint16_t wd_diag_hold_longest_gap_ms = 0;
+static uint32_t wd_diag_hold_longest_between_ticks = 0;
+// Latched by move_watchdog_cancel() when it ends an armed hold; printed by
+// ble_bed_service_tick() once the stop that ended the hold has been done.
+// The watchdog-expiry path clears it: a watchdog stop has its own block.
+static bool     wd_diag_hold_end_pending = false;
+static uint8_t  wd_diag_hold_end_opcode = 0;
+static uint8_t  wd_diag_hold_end_seq = 0;
+static uint16_t wd_diag_hold_end_refreshes = 0;
+static uint16_t wd_diag_hold_end_longest_gap_ms = 0;
+static uint32_t wd_diag_hold_end_longest_between_ticks = 0;
 
 void ble_bed_service_debug_pass_begin(void)
 {
   uint32_t now = sl_sleeptimer_get_tick_count();
-  if (wd_diag_have_exit && (now - wd_diag_pass_exit_tick) > wd_diag_longest_between_ticks) {
-    wd_diag_longest_between_ticks = now - wd_diag_pass_exit_tick;
+  if (wd_diag_have_exit) {
+    uint32_t between = now - wd_diag_pass_exit_tick;
+    if (between > wd_diag_longest_between_ticks) {
+      wd_diag_longest_between_ticks = between;
+    }
+    if (between > wd_diag_hold_longest_between_ticks) {
+      wd_diag_hold_longest_between_ticks = between;
+    }
   }
   wd_diag_pass_entry_tick = now;
 }
@@ -464,15 +483,25 @@ static void move_watchdog_arm(void)
   if (move_watchdog_armed) {
     // A refresh: keep the gap since the previous one.
     uint32_t gap_ms = sl_sleeptimer_tick_to_ms(now - wd_diag_refresh_tick);
-    wd_diag_gap_ms[wd_diag_gap_next] = (gap_ms > 0xFFFF) ? 0xFFFF : (uint16_t)gap_ms;
+    uint16_t gap16 = (gap_ms > 0xFFFF) ? 0xFFFF : (uint16_t)gap_ms;
+    wd_diag_gap_ms[wd_diag_gap_next] = gap16;
     wd_diag_gap_next = (uint8_t)((wd_diag_gap_next + 1) % WD_DIAG_GAPS);
     if (wd_diag_gap_count < WD_DIAG_GAPS) {
       wd_diag_gap_count++;
+    }
+    if (wd_diag_hold_refreshes < 0xFFFF) {
+      wd_diag_hold_refreshes++;
+    }
+    if (gap16 > wd_diag_hold_longest_gap_ms) {
+      wd_diag_hold_longest_gap_ms = gap16;
     }
   } else {
     // A fresh arm starts a new hold: earlier gaps belong to an earlier hold.
     wd_diag_gap_next = 0;
     wd_diag_gap_count = 0;
+    wd_diag_hold_refreshes = 0;
+    wd_diag_hold_longest_gap_ms = 0;
+    wd_diag_hold_longest_between_ticks = 0;
   }
   wd_diag_refresh_tick = now;
   wd_diag_refresh_rx_tick = wd_diag_processing_rx_tick;
@@ -492,6 +521,17 @@ static void move_watchdog_arm(void)
 
 static void move_watchdog_cancel(void)
 {
+#if BLE_DEBUG_WATCHDOG_LOG
+  if (move_watchdog_armed) {
+    // An armed hold is ending. Keep its figures for the "hold end" line.
+    wd_diag_hold_end_pending = true;
+    wd_diag_hold_end_opcode = wd_diag_refresh_opcode;
+    wd_diag_hold_end_seq = last_move_seq;
+    wd_diag_hold_end_refreshes = wd_diag_hold_refreshes;
+    wd_diag_hold_end_longest_gap_ms = wd_diag_hold_longest_gap_ms;
+    wd_diag_hold_end_longest_between_ticks = wd_diag_hold_longest_between_ticks;
+  }
+#endif
   move_watchdog_armed = false;
   move_watchdog_expired = false;
   sl_sleeptimer_stop_timer(&move_watchdog_timer);
@@ -579,6 +619,7 @@ static void service_move_watchdog(void)
   app_stop_all();
   send_command_result(control_connection, last_move_seq, CMD_RESULT_WATCHDOG_STOP);
 #if BLE_DEBUG_WATCHDOG_LOG
+  wd_diag_hold_end_pending = false; // this hold ended in a watchdog stop, reported below instead
   // Printed after the stop and the result, so the print cannot delay either.
   printf("BLE: WATCHDOG STOP op=0x%02x seq=%u: %lu ms since last refresh (limit %u ms)\r\n",
          wd_diag_refresh_opcode, last_move_seq,
@@ -967,6 +1008,11 @@ bool ble_bed_service_app_motion_active(void)
   return app_move_active || app_auto_level_active;
 }
 
+bool ble_bed_service_app_hold_active(void)
+{
+  return move_watchdog_armed;
+}
+
 void ble_bed_service_tick(void)
 {
   // Control link dropped mid-command (BLE_GATT_DESIGN.md #5). Deferred out
@@ -987,6 +1033,18 @@ void ble_bed_service_tick(void)
   process_pending_command();
   service_move_watchdog();
   service_app_commanding();
+
+#if BLE_DEBUG_WATCHDOG_LOG
+  // One line per app hold that ended WITHOUT a watchdog stop, printed here:
+  // every stop that ends a hold has already been carried out above.
+  if (wd_diag_hold_end_pending) {
+    wd_diag_hold_end_pending = false;
+    printf("BLE: hold end op=0x%02x seq=%u: %u refreshes, longest refresh gap %u ms, longest between passes %lu ms\r\n",
+           wd_diag_hold_end_opcode, wd_diag_hold_end_seq,
+           (unsigned)wd_diag_hold_end_refreshes, (unsigned)wd_diag_hold_end_longest_gap_ms,
+           (unsigned long)sl_sleeptimer_tick_to_ms(wd_diag_hold_end_longest_between_ticks));
+  }
+#endif
 
   if (status_subscriber_count == 0) {
     return; // #24: no subscribers - no notify traffic, no accel-sampling gate to feed yet

@@ -2115,3 +2115,87 @@ Same run and log as #43's bench result (`prompt_w_bench.log`, Galaxy S23).
 - **DOWN ALL restored 550/275** (lines 70-79): `Stored Raise Sensitivity is:
   550`, `Stored Lower Sensitivity is: 275`.
 - `Settings mode: exit` at line 81 on a new BED LIGHTS press.
+
+## 45. During an app hold the CPU stays in EM0
+
+Date: 2026-11-01. Reviewer's instruction (Prompt AA, part B), from the
+2026-11-01 bench.
+
+### Decision
+
+While an app hold is in progress, `app_is_ok_to_sleep()` (`app.c`) vetoes
+sleep, so the main loop runs in EM0 for the whole hold. This is the same
+reason a running motor (`motor_state[].motor_on`, the motor-enable shadow)
+and an active switch-sampler session already veto sleep: those stretches need
+the loop running.
+
+"An app hold" is defined as **the dead-man watchdog being armed**
+(`ble_bed_service_app_hold_active()`, which returns `move_watchdog_armed` in
+`ble_bed_service.c`). It is armed by every accepted MOVE_START and
+AUTO_LEVEL_START (`move_watchdog_arm()`), and cleared by
+`move_watchdog_cancel()` on MOVE_STOP, AUTO_LEVEL_STOP, STOP_ALL, the
+control-phone disconnect stop, a collision, a MOVE_START force-stopped by the
+wall switch, a fresh AUTO_LEVEL_START (which re-arms at once), and watchdog
+expiry. `app_move_active` / `app_auto_level_active` are deliberately **not**
+used: they can stay true with nobody repeating, whereas the watchdog state is
+**bounded** - it ends at most `MOVE_WATCHDOG_MS` (300 ms) plus one loop pass
+after the app's last accepted write, so a phone that disappears cannot keep
+the CPU awake.
+
+### Evidence
+
+2026-11-01 bench (`autolevel_stall_bench.log`, recorded in REGRESSION.md §6):
+six watchdog stops during app auto-level holds, every one in a stretch where
+no motor was on (Step 1, or the pause between axes), with the CPU sleeping
+between passes (23-39 passes in 300 ms, longest gap between passes 27-28 ms),
+the bed not busy (longest pass 2-17 ms, received->processed 0-1 ms), and the
+phone's writes arriving late and bunched (`180,0,0,0,207,0,148,28`) although
+the app issued them every 100-103 ms. No stop with a motor running, none on
+the physical controller - the two cases that already veto sleep.
+
+Why the writes arrive late while the CPU sleeps is **not established**. The
+reviewer's hypothesis is a sleep-clock accuracy or EM2 wake-up timing effect
+on the link. Note from the code (Prompt AA handoff, part C): the LF clock is
+the LFRCO in default precision, which the SDK reports to the Bluetooth
+controller as 0xFFFF ppm, and the controller then adds an EM1 requirement
+(`sl_btctrl_init.c:289-298`) - so the device may never have been in EM2 at
+all. This decision keeps the CPU out of every sleep mode during a hold
+either way; whether it removes the stalls is for the bench to show.
+
+### Effect on auto-level timing (closes Prompt Y QUESTIONS 4)
+
+App-driven auto-level now runs the loop the way the physical controller
+does, whose AUTO LEVEL hold keeps the switch sampler (and so EM0) active.
+DECISIONS #29's pass-counted constants therefore see the same pass rate on
+both paths. What changes, from the code:
+
+- `NUM_ACCEL_READINGS` (130 passes, `auto_level.c:60`) and `accel_alpha`
+  (0.1 per pass) during app-driven Step 1 and the pause between axes: before,
+  the loop ran ~77-130 passes/s there (23-39 per 300 ms on the 2026-11-01
+  bench), so the 130-pass average spanned roughly 1.0-1.7 s; now it runs at
+  the free-running rate #29 measured during auto-level (~630 passes/s, 130
+  passes ~206 ms). The LPF's time constant shrinks in the same ratio.
+- The accelerometer is still read at most every 10 ms
+  (`ACCEL_I2C_MIN_INTERVAL_MS`), so a free-running average holds each sample
+  several times - exactly as on the physical path.
+- With motors on nothing changes: a running motor already vetoed sleep.
+- The 1500 ms steady read and the 1000 ms axis pause are sleeptimer-based and
+  unchanged.
+
+So app-driven auto-level's steady checks now use the same, shorter
+averaging window as the hardware-verified physical path, instead of a longer
+one that depended on how often the CPU happened to wake. ASSERTED from code;
+not measured.
+
+### Cost
+
+EM0 for the duration of a hold only (seconds, user-initiated). An idle bed,
+connected or not, sleeps as before.
+
+### Status
+
+Builds clean with `BLE_DEBUG_WATCHDOG_LOG` at 1 and at 0. **Not run on the
+bench.** A bench-only `BLE: hold end ...` line (behind
+`BLE_DEBUG_WATCHDOG_LOG`) reports each hold's refresh count, longest refresh
+gap and longest gap between loop passes, so the fix can be checked without a
+stall: the gap between passes should now be ~0-1 ms for the whole hold.

@@ -72,4 +72,10 @@ bool ble_bed_service_status_subscribed(void);
 // is commanding motion" from "nobody is, and the motors should be off".
 bool ble_bed_service_app_motion_active(void);
 
+// True while an app hold is in progress: the dead-man watchdog is armed by an
+// accepted MOVE_START / AUTO_LEVEL_START and not yet cancelled or expired.
+// Bounded by MOVE_WATCHDOG_MS after the app's last write. Used by
+// app_is_ok_to_sleep() to keep the CPU in EM0 for the hold (DECISIONS.md #45).
+bool ble_bed_service_app_hold_active(void);
+
 #endif /* BLE_BED_SERVICE_H_ */

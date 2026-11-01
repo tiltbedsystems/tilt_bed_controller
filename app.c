@@ -521,6 +521,18 @@ bool app_is_ok_to_sleep(void)
     return false;
   }
 
+  // An app hold (DECISIONS.md #45) keeps the loop awake too, whether or not a
+  // motor is on: auto-level Step 1 and the pause between axes run with all
+  // motors off. On the 2026-11-01 bench every WATCHDOG STOP fell in such a
+  // stretch, with the CPU sleeping between passes and the phone's writes
+  // reaching the app late and bunched; none with a motor on or on the
+  // physical controller, which the two vetoes above already keep awake.
+  // Bounded: the watchdog disarms within MOVE_WATCHDOG_MS of the app's last
+  // write, so a lost phone cannot pin the CPU awake.
+  if (ble_bed_service_app_hold_active()) {
+    return false;
+  }
+
   // The motor-enable shadow, not just motor_state[]: set_all_motors_on()
   // energises the outputs without setting motor_state[].motor_on (#40), so a
   // runaway could previously let the CPU sleep between fail-safe samples - the

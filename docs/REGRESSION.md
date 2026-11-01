@@ -210,6 +210,11 @@ pitch, all actuators clear of limits.
       run, start to "Bed is level" - the original auto-level BLE-drop bug
       (DECISIONS.md #26) only manifested on a sustained multi-second move,
       so a quick/near-level test is not sufficient coverage for this check
+- [ ] 6.9 App AUTO LEVEL (DECISIONS #45): 10 holds from off-level, no
+      `BLE: WATCHDOG STOP` / no "Connection stalled" in the app. With
+      `BLE_DEBUG_WATCHDOG_LOG` 1, each hold that ends normally prints one
+      `BLE: hold end op=0x03 ...` line; "longest between passes" should be
+      ~0-1 ms.
 
 **Recorded result, 2026-11-01 (firmware `c945146`, `BLE_DEBUG_WATCHDOG_LOG`
 1, desk bed, iPhone with app TestFlight build `e22e4b9`, log

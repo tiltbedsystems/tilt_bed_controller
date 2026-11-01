@@ -70,9 +70,11 @@ typedef enum {
  * stop-class ones - runs through this uniformly: a stop request from the
  * source that already holds the lock is just that source's own natural
  * stop; a stop (or any other command) from the other source becomes a full
- * app_stop_all() via ARBITRATE_FORCE_STOP, matching DECISIONS.md #12's "any
- * input whatsoever from the other source is interpreted ONLY as an
- * immediate clean STOP" - not a partial, verb-specific stop.
+ * stop of movement, app_stop_movement(), via ARBITRATE_FORCE_STOP (since
+ * DECISIONS.md #36; it leaves the under-bed lighting alone), matching
+ * DECISIONS.md #12's "any input whatsoever from the other source is
+ * interpreted ONLY as an immediate clean STOP" - not a partial, verb-specific
+ * stop.
  */
 static arbitrate_result_t arbitrate(bed_source_t src)
 {
