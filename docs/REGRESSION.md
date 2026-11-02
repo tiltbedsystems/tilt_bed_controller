@@ -210,7 +210,7 @@ pitch, all actuators clear of limits.
       run, start to "Bed is level" - the original auto-level BLE-drop bug
       (DECISIONS.md #26) only manifested on a sustained multi-second move,
       so a quick/near-level test is not sufficient coverage for this check
-- [ ] 6.9 App AUTO LEVEL (DECISIONS #45): 10 holds from off-level, no
+- [x] 6.9 App AUTO LEVEL (DECISIONS #45): 10 holds from off-level, no
       `BLE: WATCHDOG STOP` / no "Connection stalled" in the app. With
       `BLE_DEBUG_WATCHDOG_LOG` 1, each hold that ends normally prints one
       `BLE: hold end op=0x03 ...` line; "longest between passes" should be
@@ -240,6 +240,28 @@ sleeps the link sometimes misses the phone's packets, which are then retried
 and delivered in a burst (a sleep-clock accuracy or EM2 wake-up timing issue
 being a candidate). Tested by keeping the CPU awake during app holds
 (Prompt AA commit B).
+
+**Recorded result, 2026-11-01 (firmware `75b0a61`, `BLE_DEBUG_WATCHDOG_LOG`
+1, desk bed, Galaxy S23 SM-S911U, log `prompt_aa_bench.log`, 271 lines).**
+VERIFIED (user's bench run). **6.9 PASSES** - 11 app AUTO LEVEL holds, no
+watchdog stop. Full record: DECISIONS #45 "Bench result (2026-11-01, Galaxy
+S23)".
+
+| Check | Result |
+|---|---|
+| App AUTO LEVEL holds | 11 `BLE: hold end op=0x03` lines (40, 61, 85, 103, 121, 151, 169, 187, 209, 227, 248), each preceded by exactly one `Step 1` |
+| WATCHDOG STOP | none in the log |
+| "Connection stalled" in the app | none (user's report) |
+| Longest between passes | `0 ms` on all 23 hold-end lines (12 `op=0x01` + 11 `op=0x03`; the prompt said 22) |
+| Longest refresh gap per hold | 121-181 ms over the AUTO LEVEL holds; 119-181 ms over all 23 |
+| Physical AUTO LEVEL (`SW: 0x0002`, lines 255-271) | levelled, no hold-end line |
+| Connection parameters | `latency=0`, `timeout=500` then `timeout=100` (lines 15, 17, 19) |
+
+The fix is verified; the mechanism is not (the device probably slept in EM1,
+not EM2 - Prompt AA handoff C4). Not covered: the iPhone (the original
+failing phone), and a realistic distance in the van (`docs/PRE_SHIP.md`).
+"Bed is level" did not print in any of the twelve runs (6.1 expects it) -
+open question, Prompt AC handoff.
 
 ## 7. Settings mode
 

@@ -1467,3 +1467,35 @@ Recorded in DECISIONS #43 "Bench result (2026-11-01, iPhone)" and REGRESSION.md
 - ...that "last write received" is over-the-air arrival: it is when the stack dispatched the event.
 - ...that a pre-ship list file exists: it does not.
 - ...that 0x1016 or 0x1022 is "the" refused-pairing close code: it depends on the phone (iPhone 0x1016, S23 0x1022).
+
+## 2026-11-01 — Record: Prompt AA bench result (Prompt AC part A)
+
+Recorded by the Prompt AC session from the user's bench run of 2026-11-01:
+firmware `75b0a61` (`BLE_DEBUG_WATCHDOG_LOG` 1), desk bed, Galaxy S23
+(SM-S911U), log `_03-Software/PuTTY Logs/prompt_aa_bench.log` (271 lines).
+**VERIFIED (user's bench run)**; each point was checked against the log, with
+line numbers, before recording:
+
+- 11 app AUTO LEVEL holds (`BLE: hold end op=0x03` at lines 40, 61, 85, 103,
+  121, 151, 169, 187, 209, 227, 248); no `BLE: WATCHDOG STOP` anywhere; exactly
+  one `Step 1` before each (25, 46, 67, 91, 109, 132, 157, 175, 193, 215, 233).
+- All hold-end lines read `longest between passes 0 ms`. There are **23** of
+  them, not the 22 the prompt states: 12 `op=0x01` and 11 `op=0x03` (lines
+  126 and 131 are two move holds in a row).
+- Longest refresh gap: 121-181 ms over the 11 AUTO LEVEL holds; 119-181 ms
+  over all 23 lines (the 119 is a move hold, line 66).
+- Physical AUTO LEVEL (`SW: 0x0002`, lines 255-271) levelled and printed no
+  hold-end line.
+- Connection parameters `latency=0`, `timeout=500` (lines 15, 17), then
+  `timeout=100` (line 19).
+- No "Connection stalled" in the app (user's report).
+
+The fix (DECISIONS #45) is verified; the mechanism remains unproven - the
+device probably slept in EM1, not EM2 (Prompt AA handoff C4). Recorded in
+DECISIONS #45 "Bench result (2026-11-01, Galaxy S23)" and REGRESSION.md 6.9
+(ticked). Not covered by this run: the iPhone, and a realistic distance in
+the van (`docs/PRE_SHIP.md` F12).
+
+The pre-ship list now lives in `docs/PRE_SHIP.md` (created in this commit),
+which answers Prompt AA's QUESTIONS 1. It supersedes the interim list in the
+Prompt Y rulings record above.

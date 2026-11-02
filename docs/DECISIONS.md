@@ -2199,3 +2199,56 @@ bench.** A bench-only `BLE: hold end ...` line (behind
 `BLE_DEBUG_WATCHDOG_LOG`) reports each hold's refresh count, longest refresh
 gap and longest gap between loop passes, so the fix can be checked without a
 stall: the gap between passes should now be ~0-1 ms for the whole hold.
+
+### Bench result (2026-11-01, Galaxy S23)
+
+Recorded 2026-11-01 (Prompt AC). The user's bench run, firmware `75b0a61`
+(`BLE_DEBUG_WATCHDOG_LOG` 1), phone a **Galaxy S23 (SM-S911U)**. Log:
+`_03-Software/PuTTY Logs/prompt_aa_bench.log` (271 lines). Line numbers below
+were checked against the log. **VERIFIED (user's bench run)**, except where
+marked as the user's report.
+
+- **11 app AUTO LEVEL holds, no watchdog stop.** Eleven `BLE: hold end
+  op=0x03` lines (40, 61, 85, 103, 121, 151, 169, 187, 209, 227, 248). No
+  `BLE: WATCHDOG STOP` anywhere in the log (`grep -c WATCHDOG` = 0). Each of
+  the eleven is preceded by exactly one `Step 1: ROLL and PITCH check` since
+  the previous one (25, 46, 67, 91, 109, 132, 157, 175, 193, 215, 233), so no
+  hold restarted the levelling state machine. Every one printed `Exit
+  auto-level` before its hold-end line: six levelled both axes (40, 61, 85,
+  151, 209, 248), three levelled PITCH with ROLL disabled (103, 121, 169),
+  two levelled ROLL with PITCH disabled (187, 227).
+- **Every hold-end line reads `longest between passes 0 ms`.** There are
+  **23** hold-end lines, not 22: 12 `op=0x01` (MOVE_START holds: 24, 45, 66,
+  90, 108, 126, 131, 156, 174, 192, 214, 232) and the 11 `op=0x03` above.
+  Lines 126 and 131 are two move holds in a row with no auto-level between
+  them. All 23 read `longest between passes 0 ms` (`grep -vc` = 0). The value
+  is printed in whole milliseconds (`ble_bed_service.c:1042-1045`), so 0 means
+  under 1 ms: the loop was not sleeping between passes during any hold.
+- **Longest refresh gap per hold:** 121-181 ms over the 11 AUTO LEVEL holds
+  (min 121 at line 40, max 181 at line 227; eight of the eleven at 148-151);
+  119-181 ms over all 23 lines (the 119 is a move hold, line 66). Against the
+  300 ms watchdog that leaves at least 119 ms of margin on this bench.
+- **Physical controller unaffected.** A physical DOWN HEAD press (`SW: 0x0800`,
+  lines 249-254) and a physical AUTO LEVEL hold (`SW: 0x0002`, lines 255-271)
+  that levelled ROLL then PITCH (`Exit auto-level` at 270) printed no hold-end
+  line, as designed: the line is tied to the dead-man watchdog, which only the
+  app path arms.
+- **Connection parameters:** `interval=24 latency=0 timeout=500` on connect
+  (lines 15, 17), then `timeout=100` after the bed's request (line 19).
+- **App side:** no "Connection stalled" message during the run (user's
+  report).
+
+**Result: the fix is verified** on this bench - keeping the CPU in EM0 during
+app holds removed the watchdog stops that the 2026-11-01 iPhone run showed six
+of. **The mechanism remains unproven.** Per the Prompt AA handoff (part C, C4)
+the Bluetooth controller probably held the device in EM1, not EM2, so the
+earlier stalls happened while the CPU slept in EM1; why the phone's writes
+reached the application late and bunched while it slept is still not
+established. This result shows that CPU sleep during a hold was the trigger,
+not which part of sleeping caused it. The sleep-clock question (LFRCO
+precision) is carried in `docs/PRE_SHIP.md`.
+
+Two things this run does not cover: it used the Galaxy S23, not the iPhone
+that produced the original stalls, and a desk bed at desk range (the van test
+at a realistic distance is in `docs/PRE_SHIP.md`). "Bed is level" (REGRESSION
+6.1) printed in none of the twelve runs; see the Prompt AC handoff, QUESTIONS.
