@@ -82,6 +82,7 @@ void ble_bed_service_encode_status(const bed_status_t *in, bool tilt_fresh, uint
   if (in->in_settings_mode) flags |= 0x02;
   if (in->lights_on)        flags |= 0x04;
   if (tilt_fresh)            flags |= 0x08;
+  if (in->leveled)          flags |= 0x10; // byte 0, so a change notifies at once (status_flags_changed())
   out[0] = flags;
 
   // bed_source_t / bed_command_t / bed_target_t / bed_direction_t enum

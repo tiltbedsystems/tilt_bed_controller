@@ -40,6 +40,7 @@ File:line references are to the firmware at `6796e6b` unless marked.
 | F16 | `tilt_fresh` (Stage B5) | Bed Status flag bit 3 is always 0 (`ble_bed_service.c:1057`), so the app cannot tell a fresh angle from a stale one | Claude decides | Implement, or ship without it with the app treating tilt as possibly stale | DECISIONS #17, #33; BLE_GATT_DESIGN §6 |
 | F17 | Gecko bootloader on every board before it ships | A board without the bootloader can never be updated over the air. Note: the application is linked at flash address 0x0 (`autogen/linkerfile.ld:32`), so the app's flash layout must change with it (configurator) | Claude (plan), Andrew (configurator, flashing) | Bootloader project built; app relinked; each board flashed and checked | BLE_GATT_DESIGN §10; Prompt AC |
 | F18 | "Connection stalled" shown when the physical controller takes over from the app | The app's refused repeats do not refresh the watchdog, so ~300 ms later the app gets WATCHDOG_STOP although the link is fine (`ble_bed_service.c:746-750`) | Claude decides; Claude Code (firmware or app) | A distinct result code, or app handling of FORCE_STOPPED then WATCHDOG_STOP; bench check | Prompt AA handoff QUESTIONS 5 |
+| F19 | `BED_DEBUG_LEVELED_LOG` 1 -> 0 (`bed_actions.c`) | Bench print `LEVELED (Bed Status bit 4) -> 0/1` on every change of bit 4 | Claude Code | Change to 0, build, check the `LEVELED` lines are gone | Prompt AE part F; DECISIONS #46 |
 
 ## App
 
@@ -82,4 +83,4 @@ pre-ship item until the reviewer says so.
 | Motor-fault reporting is an interim 200 ms poll; the expander's latch registers are unconfigured and the fault interrupt is not wired | `exp_board.c:342-348`, `:515-518` |
 | The lower-collision "OFF" rung (750) is not actually off | SETPOINTS_INVENTORY.md Note A |
 | Auto-level's pulsed ("sneak") phase runs with no current supervision | Prompt AC handoff B1(d) (`auto_level.c:679-738`, `:770-781`) |
-| "Bed is level" never prints: `bed_level` is never set true | Prompt AC handoff B8 (`auto_level.c:166,603`; `app.c:681`) |
+| "Bed is level" never prints: `bed_level` is never set true. **Fixed 2026-11-02 (Prompt AE part B, DECISIONS #46); bench check REGRESSION 6.1 / 6.10** | Prompt AC handoff B8 (`auto_level.c:166,603`; `app.c:681`) |

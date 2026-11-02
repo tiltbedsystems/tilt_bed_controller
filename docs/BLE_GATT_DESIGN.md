@@ -215,7 +215,8 @@ offset 0   flags            u8   bit0 any_collision
                                  bit1 in_settings_mode (physical settings mode)
                                  bit2 lights_on
                                  bit3 tilt_fresh   ← NEW, see below
-                                 bits4-7 reserved (0)
+                                 bit4 leveled      ← see "LEVELED (bit 4)" below
+                                 bits5-7 reserved (0)
 offset 1   active_source    u8   0 NONE, 1 SWITCHES, 2 APP
 offset 2   command          u8   0 NONE, 1 MOVE, 2 AUTO_LEVEL, 3 LIGHTS
 offset 3   command_detail   u8   bits0-2 target (0-4), bit3 direction (0 down/1 up)
@@ -232,6 +233,40 @@ offset 8   motor[0..3]      4 × { status u8, current_ma u16 }  = 12 B
              NOT logical corner — the corner mapping arrives with the
              calibration wizard (#7); until then the app labels A–D.
 ```
+
+### LEVELED (bit 4)
+
+Added 2026-11-02 (DECISIONS #46), within protocol v1 - see "Protocol version
+and this change" below.
+
+**Set** when an auto-level run, from either source (switch panel or app),
+ends successfully. "Successfully" is any of:
+
+- both axes levelled;
+- Step 1 found both axes already within tolerance, so no levelling was
+  needed (`Bed is disabled, no leveling required`);
+- one axis was already within tolerance (disabled) and the other levelled.
+
+**Cleared** when:
+
+- any motion starts - a single-side move, an ALL move, a new auto-level run
+  (either source), or the collision sequence's reverse;
+- a collision trips (summed rise or max load), in the same pass as the trip;
+- settings mode is entered.
+
+Nothing else clears it. In particular it **stays set** while the user keeps
+holding AUTO LEVEL after the run succeeded, and after the release, and
+through STOP / STOP_ALL, a watchdog stop or a disconnect stop - none of those
+moves the bed. It is 0 at boot.
+
+**App use:** "levelled - you can let go" while AUTO LEVEL is still held
+(`command` still reads AUTO_LEVEL until release), and "bed is level" on the
+idle screen until something moves.
+
+A change of bit 4 is a state-flag change, so it is notified at once
+(`status_flags_changed()` compares bytes 0-3, `ble_bed_service.c`), like the
+other flag bits. Collision during a run is shown by bit 0, not by bit 4: a
+run that ends in a collision never sets bit 4.
 
 ### Tilt sign conventions
 
@@ -296,6 +331,12 @@ failure is invisible on both ends, which is worse than a refusal.
 
 (Note also that the version value lives in a Simplicity Studio-generated
 config file, so a future bump goes through the configurator, not a hand-edit.)
+
+**LEVELED, flag bit 4 (2026-11-02, DECISIONS #46): also amended in place, no
+version bump.** It is additive: the bit was reserved and always 0, the byte
+layout does not change, and a client that ignores bit 4 behaves exactly as
+before. Amending v1 rests on the same pre-ship reasoning as above, and the
+after-first-ship rule above is unchanged by it.
 
 **`tilt_fresh` requires a one-bit firmware addition** implementing
 DECISIONS #17's app-era plan: continuous accelerometer sampling runs at a

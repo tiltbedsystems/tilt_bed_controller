@@ -60,6 +60,7 @@ typedef struct {
   bool any_collision;
   bool in_settings_mode;
   bool lights_on;
+  bool leveled;              // last auto-level run succeeded, nothing moved since (#46)
 
   bed_command_t command;
   bed_target_t command_target;       // valid only when command == BED_COMMAND_MOVE

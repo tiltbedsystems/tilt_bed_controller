@@ -11,6 +11,7 @@
 #include <math.h>
 
 #include "motor_current_functions.h"
+#include "bed_actions.h"
 #include "dual_motor_control.h"
 #include "adc_currents.h"
 #include "exp_board.h"
@@ -394,6 +395,12 @@ void run_motor_supervision(active_switch_t sw, bool is_raising)
     all_motor_limit_switch_temp_off();
   }
   collision_check(is_raising);
+
+  // Every trip (summed rise or max load) is set inside this function, so this
+  // one check covers them all, in the same pass as the trip (#46).
+  if (any_collision) {
+    app_set_leveled(false);
+  }
 
 #if BED_CAPTURE_MOTOR_CURRENTS
   {

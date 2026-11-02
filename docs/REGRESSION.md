@@ -193,7 +193,9 @@ Starting condition for 6.1: frame tilted several degrees in both roll and
 pitch, all actuators clear of limits.
 
 - [ ] ⚡ 6.1 Hold AUTO_LEVEL: red LED blinks; ROLL levels first, then PITCH;
-      motors stop; green LED on; "Bed is level" prints
+      motors stop; green LED on; `Exit auto-level` then "Bed is level"
+      print (DECISIONS #46: it prints on every successful end, after the
+      outcome's own line), and `LEVELED (Bed Status bit 4) -> 1`
 - [ ] 6.2 Verify with an independent level/inclinometer that the frame is
       actually level (within tolerance) after 6.1
 - [ ] 6.3 Bed already level: AUTO_LEVEL exits promptly with green LED,
@@ -207,7 +209,8 @@ pitch, all actuators clear of limits.
 - [ ] 6.7 Auto-level respects limits: with one actuator at its limit on the
       driven axis, leveling stops that pair and does not fight the limit
 - [ ] ⚡ 6.8 BLE link stays up (no disconnect) through a full auto-level
-      run, start to "Bed is level" - the original auto-level BLE-drop bug
+      run, start to "Bed is level" (prints since DECISIONS #46; before it,
+      use `Exit auto-level`) - the original auto-level BLE-drop bug
       (DECISIONS.md #26) only manifested on a sustained multi-second move,
       so a quick/near-level test is not sufficient coverage for this check
 - [x] 6.9 App AUTO LEVEL (DECISIONS #45): 10 holds from off-level, no
@@ -262,6 +265,22 @@ not EM2 - Prompt AA handoff C4). Not covered: the iPhone (the original
 failing phone), and a realistic distance in the van (`docs/PRE_SHIP.md`).
 "Bed is level" did not print in any of the twelve runs (6.1 expects it) -
 open question, Prompt AC handoff.
+
+- [ ] 6.10 LEVELED, Bed Status flag bit 4 (DECISIONS #46). With
+      `BED_DEBUG_LEVELED_LOG` 1 each change prints one line
+      `LEVELED (Bed Status bit 4) -> 0|1`; with the app subscribed, Bed
+      Status bit 4 follows it.
+  - [ ] 6.10a Physical AUTO LEVEL from off-level to success: `-> 1` next to
+        `Bed is level`. Keep holding 3 s, then release: no further LEVELED line.
+  - [ ] 6.10b The same from the app's AUTO LEVEL button.
+  - [ ] 6.10c With it set, press any move (switch or app, one side or ALL):
+        `-> 0` on the press. Set it again, then press AUTO LEVEL: `-> 0` on
+        the press.
+  - [ ] 6.10d Bed already level (6.3): `-> 1` with `Bed is disabled, no
+        leveling required` and `Bed is level`.
+  - [ ] 6.10e With it set, hold BED LIGHTS 5 s into settings mode: `-> 0`
+        at entry.
+  - [ ] 6.10f With it set, STOP_ALL from the app: no LEVELED line (it stays 1).
 
 ## 7. Settings mode
 

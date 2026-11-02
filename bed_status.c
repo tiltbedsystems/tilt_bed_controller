@@ -143,6 +143,7 @@ void bed_status_get(bed_status_t *out)
   out->any_collision = any_collision;
   out->in_settings_mode = app_in_settings_mode();
   out->lights_on = app_lights_on();
+  out->leveled = app_leveled();
 
   translate_command(app_active_command(), &out->command, &out->command_target, &out->command_direction);
 

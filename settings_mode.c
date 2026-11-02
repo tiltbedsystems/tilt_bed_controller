@@ -284,6 +284,7 @@ void settings_mode_tick(void)
 
     if (timeout_5000ms){
         in_settings_mode = true;
+        app_set_leveled(false); // Bed Status bit 4 (#46)
         sl_sleeptimer_stop_timer(&handle_5000ms_timer);
         timeout_5000ms = false;
     }

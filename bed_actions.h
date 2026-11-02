@@ -59,4 +59,9 @@ active_switch_t app_active_command(void);
 bool app_in_settings_mode(void);
 bool app_lights_on(void);
 
+// LEVELED (Bed Status flag bit 4, DECISIONS.md #46): the last auto-level run
+// ended successfully and nothing has moved since. Main-loop context only.
+void app_set_leveled(bool leveled);
+bool app_leveled(void);
+
 #endif /* BED_ACTIONS_H_ */

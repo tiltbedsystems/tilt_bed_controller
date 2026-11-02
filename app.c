@@ -602,6 +602,7 @@ void app_process_action(void)
       LED_timer_timeout = false;
       LED_blink_counter++;
       if (LED_blink_counter == 2){
+        app_set_leveled(false); // the reverse is motion (#46)
         reverse_motor_direction_and_start(active_switch_during_collision);
       }
     }
@@ -642,9 +643,14 @@ void app_process_action(void)
           auto_level_active = false;
           auto_level_stop_blink_LED(LED_RED);
           set_LED_on(LED_GREEN);
+          bed_level = true;       // a successful end: nothing needed levelling
+          app_set_leveled(true);  // Bed Status bit 4 (#46)
           if (first_print[3]){
 #if !BED_CAPTURE_MOTOR_CURRENTS
               printf("Bed is disabled, no leveling required\r\n");
+              if (bed_level){
+                  printf("Bed is level\r\n");
+              }
 #endif
               first_print[3] = false;
           }
@@ -676,16 +682,20 @@ void app_process_action(void)
               auto_level_active = false;
               auto_level_stop_blink_LED(LED_RED);
               set_LED_on(LED_GREEN);
+              // Every way into this branch is a successful end (#46). bed_level
+              // was never set true before, so "Bed is level" never printed.
+              bed_level = true;
+              app_set_leveled(true);  // Bed Status bit 4 (#46)
 #if !BED_CAPTURE_MOTOR_CURRENTS
               printf("Exit auto-level\r\n");
-              if (bed_level){
-                  printf("Bed is level\r\n");
-              }
-              else if (axis_disabled[ROLL] && level_status[PITCH].level){
+              if (axis_disabled[ROLL] && level_status[PITCH].level){
                   printf("ROLL is disabled and Pitch is level\r\n");
               }
               else if (axis_disabled[PITCH] && level_status[ROLL].level){
                   printf("PITCH is disabled and ROLL is level\r\n");
+              }
+              if (bed_level){
+                  printf("Bed is level\r\n");
               }
 #endif
           } else {

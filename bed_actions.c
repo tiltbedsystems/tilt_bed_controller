@@ -13,6 +13,8 @@
 
 #include "bed_actions.h"
 
+#include <stdio.h>
+
 #include "app.h"
 #include "auto_level.h"
 #include "debug_capture.h"
@@ -37,6 +39,33 @@ static bool active_move_is_all = false;
 static bool bedlights_on = false; // Tracks if bedlights are turned on/off
 
 static bool double_check = false; // Used to double check level only one time
+
+// Bench print: one line on every change of the LEVELED flag (Bed Status flag
+// bit 4), so the bench log shows the bit without a phone. Fires only on a
+// change, never per pass. Pre-ship: 0 (PRE_SHIP.md).
+#define BED_DEBUG_LEVELED_LOG 1
+
+// LEVELED (Bed Status flag bit 4, DECISIONS.md #46). Set when an auto-level
+// run of either source ends successfully; cleared when any motion starts, on
+// a collision trip and on entering settings mode. Releasing AUTO LEVEL, STOP
+// and STOP_ALL do not clear it: they move nothing.
+static bool bed_leveled = false;
+
+void app_set_leveled(bool leveled)
+{
+  if (leveled == bed_leveled) {
+    return;
+  }
+  bed_leveled = leveled;
+#if BED_DEBUG_LEVELED_LOG && !BED_CAPTURE_MOTOR_CURRENTS
+  printf("LEVELED (Bed Status bit 4) -> %u\r\n", leveled ? 1u : 0u);
+#endif
+}
+
+bool app_leveled(void)
+{
+  return bed_leveled;
+}
 
 // Shared handling for a single-side motor button press
 static void motor_button_pressed(active_switch_t switch_value, side_of_bed_t side, bool up)
@@ -111,6 +140,7 @@ void app_move_start(bed_target_t target, bed_direction_t dir)
 {
   bool up = (dir == BED_DIR_UP);
   active_move_is_all = (target == BED_TARGET_ALL);
+  app_set_leveled(false); // any move, either source, ALL included (#46)
   capture_reset_timer();
   switch (target) {
     case BED_TARGET_HEAD:
@@ -152,6 +182,7 @@ void app_move_stop(void)
 
 void app_auto_level_start(void)
 {
+  app_set_leveled(false); // a new run, either source (#46)
   capture_reset_timer();
   active_switch = SWITCH_AUTO_LEVEL_VALUE;
   initial_switch_press = true;

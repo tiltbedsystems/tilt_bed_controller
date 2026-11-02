@@ -2252,3 +2252,76 @@ Two things this run does not cover: it used the Galaxy S23, not the iPhone
 that produced the original stalls, and a desk bed at desk range (the van test
 at a realistic distance is in `docs/PRE_SHIP.md`). "Bed is level" (REGRESSION
 6.1) printed in none of the twelve runs; see the Prompt AC handoff, QUESTIONS.
+
+## 46. Bed Status flag bit 4 = LEVELED; "Bed is level" prints on every successful auto-level end
+
+Date: 2026-11-02. Reviewer's instruction (Prompt AE, part B), from the Prompt
+AC handoff (B8 rows 1-4, QUESTIONS 2).
+
+### Decision
+
+**Bit 4 (0x10) of the Bed Status flags byte is LEVELED** (BLE_GATT_DESIGN §6,
+"LEVELED (bit 4)"). It is set when an auto-level run of either source ends
+successfully - both axes levelled, Step 1 found no levelling needed, or one
+axis disabled and the other levelled - and cleared when any motion starts
+(any move, ALL, a new auto-level run, the collision reverse), on a collision
+trip, and on entering settings mode. Nothing else clears it: it stays set
+while AUTO LEVEL is still held after success, after the release, and through
+STOP, STOP_ALL, a watchdog stop and a disconnect stop. Additive within
+protocol v1 (the bit was reserved and always 0); the Protocol Version value
+is unchanged.
+
+**"Bed is level" now prints on every successful end** (the four outcomes
+above), after the lines that already printed. Before, `bed_level` was only
+ever set false (`auto_level.c:166`, `reset_level_data()` `:603`), so the
+`if (bed_level)` branch in `app.c` could never run and REGRESSION 6.1 / 6.8
+could not pass as written.
+
+### Implementation
+
+- The flag is `bed_leveled` in `bed_actions.c`, with `app_set_leveled()` /
+  `app_leveled()` (`bed_actions.c:43-69`, declared in `bed_actions.h`). It is
+  a separate flag from `bed_level` on purpose: `bed_level` is cleared by
+  `reset_level_data()`, which `app_auto_level_stop()` calls on the release,
+  and bit 4 must survive the release.
+- Set: `app.c` Step-1 "no levelling required" branch (`:646-647`) and the
+  success branch (`:687-688`), which also set `bed_level = true`.
+- Cleared: `app_move_start()` (`bed_actions.c:143`, every move of either
+  source, ALL included - the switch path reaches it through
+  `bed_move_start()` too); `app_auto_level_start()` (`:185`); the end of
+  `run_motor_supervision()` when `any_collision` is set
+  (`motor_current_functions.c:399-404`) - every trip, summed rise or max load,
+  is declared inside that function, so this is the same pass as the trip;
+  the collision reverse (`app.c:605`); settings-mode entry
+  (`settings_mode.c:287`).
+- Wire: `bed_status_t.leveled` (`bed_status.h`, filled in `bed_status.c`),
+  encoded as `flags |= 0x10` in `ble_bed_service_encode_status()`. The flags
+  byte is byte 0, which `status_flags_changed()` already compares, so a change
+  of bit 4 is notified at once like bits 0-2 - no change to the notify logic.
+- Bench print, behind a new flag `BED_DEBUG_LEVELED_LOG` (1 by default,
+  `bed_actions.c`, listed in `docs/PRE_SHIP.md`): one line
+  `LEVELED (Bed Status bit 4) -> 0|1` on each change of the flag, never per
+  pass. Suppressed when `BED_CAPTURE_MOTOR_CURRENTS` is 1, like the other
+  prints.
+
+All main-loop context; no new I2C, nothing blocks, nothing runs in a
+Bluetooth stack callback.
+
+### Choices made in the implementation (for the reviewer)
+
+- "Bed is level" prints in **all four** success outcomes, not only "both
+  axes levelled", so that one line marks every successful end and matches
+  bit 4. The existing lines are kept: `Exit auto-level`, `Bed is disabled, no
+  leveling required`, `ROLL is disabled and Pitch is level`, `PITCH is
+  disabled and ROLL is level`. Order: the existing line(s) first, then `Bed
+  is level`.
+- A move counts as "motion started" when `app_move_start()` runs, i.e. when
+  bed_control accepted the command - even if `set_dual_motors_on()` then
+  refuses a pair at an inferred limit. A refused command (conflict latch,
+  force-stop) starts nothing and leaves bit 4 alone.
+- The bench-only runaway provocation (`BED_BENCH_PROVOKE_RUNAWAY`, 0) does
+  not clear bit 4.
+
+### Status
+
+Builds clean (no warnings). **Not run on the bench.**
