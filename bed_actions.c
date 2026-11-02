@@ -248,6 +248,12 @@ void app_stop_all(void)
       motor_state[i].motor_on = false;
   }
   set_all_LED_off();
+  // The lighting output is never touched here, so its indicator comes back,
+  // as after a collision and an app MOVE_STOP. Not in settings mode: there
+  // amber is the settings-mode blink, which settings_mode_tick() keeps going.
+  if (bedlights_on && !in_settings_mode) {
+    set_LED_on(LED_AMBER);
+  }
   reset_limit_switch_flags(); // stale inferred limits must not survive a stop (#37)
   if (in_settings_mode) {
     // STOP in settings mode abandons a sensitivity or zero-angle hold in

@@ -383,6 +383,12 @@ bench run), except where marked as the user's report.
 - [ ] Tap again: lighting off, amber LED off
 - [ ] Lights state survives a motor move and a collision sequence
       (amber restored after collision blink)
+- [ ] Lights on, app STOP_ALL (with and without a move running): lighting
+      and amber both stay on (Prompt AE part C; before, amber went off). The
+      same after a watchdog stop and after the control phone disconnects
+      mid-hold. A brief amber flicker at the stop is possible: the stop turns
+      every LED off and then amber back on, as app MOVE_STOP already does
+      (DECISIONS #36 "The indicator blip").
 
 ## 9. Cross-checks & UART health
 
