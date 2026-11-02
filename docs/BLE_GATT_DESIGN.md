@@ -382,25 +382,27 @@ Notify, 2 bytes: `{ seq u8, result u8 }`, echoing the command's seq.
    the app has not released since) **or while any collision sequence runs**
    (Bed Status flag bit 0 set - including one from the physical controller),
    echoing that command's own seq. The command starts nothing and does not arm
-   the watchdog.
+   the watchdog. **Such a refusal also sets the latch** (DECISIONS #48,
+   amended by Prompt AG): a hold that meets a collision - including a new
+   press made while any collision sequence runs - must be released before a
+   new start is accepted, even after the sequence has ended.
 
 The latch clears when the app releases: MOVE_STOP, AUTO_LEVEL_STOP, STOP_ALL
-(from either connection), the control connection dropping while the app holds
-the bed, or `MOVE_WATCHDOG_MS` (300 ms) with no MOVE_START / AUTO_LEVEL_START
-from the app. A press after that, once the collision sequence has ended, is a
-normal start. Checked after the viewer and settings-mode rejections and before
+**from the control connection**, the control connection dropping while the
+app holds the bed, or `MOVE_WATCHDOG_MS` (300 ms) with no MOVE_START /
+AUTO_LEVEL_START from the app. **A viewer's STOP_ALL does not clear it**: it
+stops the bed as always (and is answered 0x00), but the control user may still
+be holding, so the latch then clears by the control app's own release or 300
+ms after its last MOVE_START / AUTO_LEVEL_START. A press after the release,
+once the collision sequence has ended, is a normal start. Checked after the viewer and settings-mode rejections and before
 the #36 two-source check, so a viewer still gets 0x02, settings mode 0x03, and
 the app is told "collision", not "wall switch".
 
 App behaviour: on 0x06, end the hold (stop repeating; a MOVE_STOP /
 AUTO_LEVEL_STOP is fine) and show the collision screen until the user lifts
-the finger; a new press is a new hold. The firmware does not rely on this for
-the hold that collided: its repeats are refused until it releases. It does
-rely on it for one case: a **new** press made while the collision sequence is
-still running (released and pressed again within ~1.5 s) is refused only
-until the sequence ends, because it did not set the latch - if the app keeps
-repeating that press past the end of the sequence, the next repeat starts the
-bed (with current supervision running again).
+the finger; a new press is a new hold. The firmware does not rely on this:
+the repeats of any hold that met a collision are refused until it releases,
+including a new press made while the collision sequence is still running.
 
 **Protocol version: additive within v1, no version change.** The code was
 unused and the byte layout is unchanged; a client that does not know 0x06

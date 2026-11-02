@@ -2551,3 +2551,61 @@ Builds clean (no warnings, `BLE_DEBUG_WATCHDOG_LOG` 1 and 0). The host test
 (`test/bed_control_test.c`) is unchanged and passes; it cannot reach this
 code (it compiles bed_control.c only). **Not run on the bench.** REGRESSION §5,
 items marked #48.
+
+### Amended by Prompt AG (2026-11-02)
+
+Reviewer's rulings on the Prompt AF handoff (`fw_HANDOFF_2026-11-02_02_...`,
+QUESTIONS f.1, f.2, f.7). Three changes, `ble_bed_service.c` only; the text
+above is left as written and is superseded where it says otherwise. Line
+numbers are after the change.
+
+1. **A viewer's STOP_ALL does not clear the latch (f.1).** A STOP_ALL from the
+   connection that is not the control connection still does everything it did
+   (watchdog cancelled, both app flags cleared, the app's half of the #36 latch
+   released with `bed_note_source_released(BED_SOURCE_APP)`, `app_stop_all()`,
+   0x00 to the sender), but while the latch is set it does not call
+   `note_app_stopped_commanding()` (`ble_bed_service.c:718-731`). So the latch
+   stays, and `app_commanding` stays set - the latch is only ever set together
+   with `note_app_commanding()` (changes 2 and 3) and only
+   `note_app_stopped_commanding()` clears `app_commanding`, so the silence
+   timeout keeps running from the control app's last MOVE_START /
+   AUTO_LEVEL_START and clears the latch 300 ms after it even if the control
+   app sends nothing more. Its own MOVE_STOP / AUTO_LEVEL_STOP / STOP_ALL clear
+   it as before. **Why:** the viewer's user is not the control user; their
+   STOP_ALL stopped the bed, but it is not the control user lifting the finger,
+   and clearing the latch let a still-repeating control app restart the bed.
+   A STOP_ALL from the control connection still clears the latch, and a
+   viewer's STOP_ALL with no latch set is unchanged.
+2. **Any `any_collision` refusal also latches (f.2).** The refusal in
+   `process_pending_command()` sets `app_collision_latched` (`:813`) before
+   `note_app_commanding()`. **Why:** with AF, a new press made inside the
+   collision sequence (released and pressed again within ~1.5 s), or an app
+   press during a physical-controller collision, was refused only until the
+   sequence ended; an app that kept repeating it then restarted the bed. Now
+   every app hold that meets a collision must be released before a new start
+   is accepted. The "latch cleared" bench print now covers these refusals too
+   (AF f.5 resolved).
+3. **The trip calls `note_app_commanding()` (f.7).** In the trip branch of
+   `service_move_watchdog()` (`:629`), right after the latch is set. Still not
+   `note_app_stopped_commanding()`. **Why:** AF b.11.3 - a trip in the few ms
+   between the silence clear and the watchdog expiry set the latch with
+   `app_commanding` already false, so silence could never clear it.
+   `note_app_commanding()` (`:565-570`) sets only `app_commanding` and
+   `app_command_deadline_tick`, which only `service_app_commanding()` reads;
+   it calls nothing in bed_control. It "refreshes" the app's half of the #36
+   latch only in the sense that it postpones the silence-path
+   `bed_note_source_released(BED_SOURCE_APP)` to 300 ms after the call; it
+   does not set bed_control's `source_commanding[BED_SOURCE_APP]`.
+
+**What remains, from code (ASSERTED):** a STOP_ALL from the control phone
+(e.g. a second finger) after the collision sequence, while the first finger is
+still on the held button, clears the latch and the next repeat starts the move
+(with supervision running) - the same as that STOP_ALL during any ordinary hold.
+Inside the sequence the next repeat is refused and re-latches (change 2).
+After a viewer's STOP_ALL the bed is idle, so a control-phone drop no longer
+goes through the disconnect stop (`bed_active_source()` is NONE, `:1011`); the
+latch then clears by silence, as AF already recorded for a drop after the
+sequence.
+
+**Status:** builds clean (no warnings) with `BLE_DEBUG_WATCHDOG_LOG` 1 and 0;
+host test unchanged and passes. **Not run on the bench.** REGRESSION 5.A3-5.A6.

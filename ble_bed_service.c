@@ -331,13 +331,16 @@ static bed_direction_t app_move_dir    = BED_DIR_UP;
 static bool app_auto_level_active = false;
 
 // Collision latch (DECISIONS #48). Set when a collision trips during an app
-// hold, while the user is still holding the app button. Every MOVE_START and
-// AUTO_LEVEL_START is then answered COLLISION_STOP and starts nothing, until
-// the app releases - an explicit stop, STOP_ALL, the control-phone
-// disconnect, or MOVE_WATCHDOG_MS of silence, i.e. every caller of
-// note_app_stopped_commanding(). Without it the held button's next repeat
-// re-energised the same pair, into the obstruction, during the collision
-// sequence.
+// hold, while the user is still holding the app button, and when a start is
+// refused because a collision sequence is running (amended by Prompt AG).
+// Every MOVE_START and AUTO_LEVEL_START is then answered COLLISION_STOP and
+// starts nothing, until the app releases - an explicit stop, the control
+// phone's STOP_ALL, the control-phone disconnect, or MOVE_WATCHDOG_MS of
+// silence, i.e. every caller of note_app_stopped_commanding(). A viewer's
+// STOP_ALL does not clear it. Always set together with note_app_commanding(),
+// so the silence timeout is running whenever it is set. Without it the held
+// button's next repeat re-energised the same pair, into the obstruction,
+// during the collision sequence.
 static bool app_collision_latched = false;
 
 // Whether the app is still asking for motion, for the two-source inhibit
@@ -617,11 +620,13 @@ static void service_move_watchdog(void)
     // The user is still holding the app button, so latch (#48): the repeats
     // that follow are refused and start nothing. NOT note_app_stopped_
     // commanding() - the app has not released, and its half of the #36
-    // latch stays as it is.
+    // latch stays as it is. note_app_commanding() restarts the silence
+    // timeout, so the latch clears by silence even if no repeat follows.
     move_watchdog_cancel();
     app_move_active = false;
     app_auto_level_active = false;
     app_collision_latched = true;
+    note_app_commanding();
     send_command_result(control_connection, last_move_seq, CMD_RESULT_COLLISION_STOP);
 #if BLE_DEBUG_WATCHDOG_LOG
     // After the motors are off and the result is sent.
@@ -713,7 +718,17 @@ static void process_pending_command(void)
     move_watchdog_cancel();
     app_move_active = false;
     app_auto_level_active = false;
-    note_app_stopped_commanding("stop_all"); // never inhibited, and releases the latch
+    if (conn == control_connection || !app_collision_latched) {
+      note_app_stopped_commanding("stop_all"); // never inhibited, and releases the latch
+    } else {
+      // A viewer's STOP_ALL during the collision latch (#48, amended by
+      // Prompt AG). It stops the bed and releases the app's half of the #36
+      // latch as before, but it is not the control user's release, so the
+      // collision latch stays. app_commanding is left set (the latch is only
+      // ever set with it set), so the silence timeout keeps running from the
+      // control app's last repeat.
+      bed_note_source_released(BED_SOURCE_APP);
+    }
     app_stop_all();                // STOP_ALL keeps its full everything-off behaviour
 
     // Accepted from ANY role - control or viewer. DECISIONS #12's
@@ -786,13 +801,16 @@ static void process_pending_command(void)
   // also while ANY collision sequence runs - a quick release and press inside
   // the sequence, or a press during a physical-controller collision, would
   // otherwise re-energise a pair while current supervision is off
-  // (switch_input_tick() requires !any_collision).
+  // (switch_input_tick() requires !any_collision). A refusal also latches
+  // (Prompt AG), so a hold that met a collision must be released before a
+  // new start is accepted, even once the sequence has ended.
   //
   // note_app_commanding() as in the #36 refusal: a refused repeat still means
   // the user is holding, so the silence timeout must not release the latch.
   // No bed_control call, no last_move_seq update, no watchdog arm.
   if ((opcode == CMD_OPCODE_MOVE_START || opcode == CMD_OPCODE_AUTO_LEVEL_START)
       && (app_collision_latched || any_collision)) {
+    app_collision_latched = true;
     note_app_commanding();
     send_command_result(conn, seq, CMD_RESULT_COLLISION_STOP);
 #if BLE_DEBUG_WATCHDOG_LOG
