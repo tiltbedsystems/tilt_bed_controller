@@ -1586,3 +1586,40 @@ Prompt Y rulings record above.
 - ...that `BED_DEBUG_LEVELED_LOG` ships at 1: it is a bench flag (PRE_SHIP F19).
 - ...that PRE_SHIP line references in F20-F25 are at HEAD: like the rest of that file they are at `6796e6b` unless marked.
 - User direction after the Part A stop: Part A comes in a new prompt; not implemented here. The handoff lists the collision-restart finding first under QUESTIONS FOR REVIEW.
+
+## 2026-11-02 — Prompt AF: collision latch on the app path, COLLISION_STOP 0x06 (DECISIONS #48)
+
+**Commits**
+
+- `e646c3b` — `ble_bed_service.c`: Command Result 0x06 COLLISION_STOP; `app_collision_latched` set at a trip during an app hold (with `app_auto_level_active` now also cleared there), 0x06 sent once with `last_move_seq`; MOVE_START / AUTO_LEVEL_START refused with 0x06 while latched or while `any_collision`, before the #36 check; latch cleared in `note_app_stopped_commanding()` (now takes a reason string for the print); bench prints `BLE: COLLISION_STOP ...` and `BLE: collision latch cleared (<reason>), K repeats refused` behind `BLE_DEBUG_WATCHDOG_LOG`. Docs: BLE_GATT_DESIGN §7 row 0x06 and §12 item 8, DECISIONS #48 (Prompt AE A2 withdrawn), REGRESSION §5 items 5.A1-5.A5. Prompt AF file committed.
+- The handoff `docs/handoffs/fw_HANDOFF_2026-11-02_02_collision-latch-app-hold.md` and this entry are committed together after `e646c3b`.
+
+**VERIFIED**
+
+- Start state matched the prompt: HEAD `4d1fef3` (parent `e3cc865`) = `origin/main` after `git fetch`; only `.projectlinkstore` modified, the prompt file untracked.
+- Builds (CLI, the prompt permits it): baseline ELF before the edit = text 245,188 (the AE record); after the edit exit 0, no warning/error lines, text 245,588 / data 784 / bss 72,476 (+400 / +4 / -4); also clean with `BLE_DEBUG_WATCHDOG_LOG` 0 (temporary, reverted, rebuilt); after the commit `ninja: no work to do`.
+- Host test `test/bed_control_test.c` (MinGW gcc 6.3.0): 0 checks failed. `bed_control.c` unchanged.
+- `BED_BENCH_PROVOKE_RUNAWAY` 0 (`switch_input.c:98`), `BLE_BENCH_WIPE_BONDS` 0 (`ble_bed_service.c:70`), `BED_CAPTURE_MOTOR_CURRENTS` 0 (`debug_capture.h:21`). No `config/`, `autogen/` or GATT change.
+- From code: callers of `note_app_stopped_commanding()` after the change are MOVE_STOP `:871`, AUTO_LEVEL_STOP `:910`, STOP_ALL `:716`, disconnect stop `:1095`, silence `:599`, watchdog expiry `:665` (unreachable while latched).
+
+**ASSERTED-but-untested** (nothing ran on the bed)
+
+- The whole latch behaviour (handoff b.B1-B5, DECISIONS #48), including: the held app MOVE button no longer re-energises toward the obstruction; one 0x06 at the trip plus one per refused repeat; release clears it.
+- **The runaway fail-safe cuts the collision reverse ~150-200 ms after it starts after an app collision** (no switch down, both app flags false) and prints `FAILSAFE: ...`. Read from code; the same applies today to a physical collision once the button is released.
+- The `|| any_collision` window = 1500 ms + the gap to the next pass after the trip + the wake latency after the third 500 ms LED timer expiry.
+- A drop after the collision sequence has ended does not run the disconnect stop (`bed_active_source()` is NONE by then); the latch clears by silence ≤300 ms after the last write instead.
+
+**Open**
+
+- Bench: REGRESSION 5.A1-5.A5 with `BLE_DEBUG_WATCHDOG_LOG` 1; expected console lines in the handoff (section E).
+- QUESTIONS in the handoff (f): STOP_ALL from a viewer clears the latch while the control user may still hold; a re-press inside the sequence is refused only until it ends; the fail-safe shortening the reverse; the conditional disconnect release; a tiny window where the latch can be set with `app_commanding` already false (no silence clear until the app's next stop).
+- D4: no host-test cases - the latch lives in `ble_bed_service.c`, which the host test cannot compile (SDK headers, `sl_bt_msg_t` events, sleeptimer); what it would take is in the handoff.
+- App repo: its copy of BLE_GATT_DESIGN §7 and the app's handling of 0x06 are for the next app prompt.
+
+**The next session must NOT assume**
+
+- ...that the latch works on the bed: built, not run. The AE warning (do not test a collision while holding an app MOVE button) stands until REGRESSION 5.A1 passes, with an obstruction that is safe to hit twice.
+- ...that the app handles 0x06: the firmware sends it; the app side is not written.
+- ...that the collision reverse runs its full 500 ms after an app collision: from code the fail-safe cuts it.
+- ...that the disconnect stop runs for every drop during the latch: only while the bed is still non-idle (during the sequence).
+- ...that `BLE_DEBUG_WATCHDOG_LOG` ships at 1: bench flag.
