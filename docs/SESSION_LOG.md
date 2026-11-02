@@ -1499,3 +1499,36 @@ the van (`docs/PRE_SHIP.md` F12).
 The pre-ship list now lives in `docs/PRE_SHIP.md` (created in this commit),
 which answers Prompt AA's QUESTIONS 1. It supersedes the interim list in the
 Prompt Y rulings record above.
+
+## 2026-11-01 — Prompt AC: AA bench record, PRE_SHIP.md, code report for the next features
+
+**Commits**
+
+- `fad70fc` — A, docs only: DECISIONS #45 "Bench result (2026-11-01, Galaxy S23)", REGRESSION.md 6.9 ticked with its recorded result, new `docs/PRE_SHIP.md`, the record entry above; commits the Prompt AC prompt file.
+- The handoff `docs/handoffs/fw_HANDOFF_2026-11-01_02_aa-bench-preship-feature-report.md` and this entry are committed together after it. No source change, no build (the prompt forbids source changes).
+
+**VERIFIED**
+
+- Start state matched the prompt: HEAD `6796e6b` = `origin/main` after `git fetch`.
+- The AA bench log supports every A1 point except one count: 23 hold-end lines (12 `op=0x01` + 11 `op=0x03`), not 22. All 23 read `longest between passes 0 ms`; no WATCHDOG STOP; one Step 1 per AUTO LEVEL hold; refresh gaps 121-181 ms (AUTO LEVEL holds) / 119-181 ms (all); physical AUTO LEVEL printed no hold-end line; `latency=0`, `timeout=500` then `100`.
+- From code (all cited in the handoff, section b): collision trip = sum of positive per-motor (200-pass moving average - peak baseline) > raise/lower margin, blind for the first ~450 supervision passes; auto-level's pulsed phase runs no current supervision; the "continuous" re-baseline writes an array nothing reads; auto-level always uses the raise margin; `bed_level` is never set true, so "Bed is level" never prints (none in the 12 bench runs); Settings RPC 0005 is not implemented and not in the GATT database; the pairing window's only tie to settings mode is `ble_bed_service.c:1240`; `app_stop_all()` turns the amber LED off while the lights stay on; a collision during an app hold sends no Command Result; the app is linked at flash 0x0.
+- Headroom from the existing build output (`arm-none-eabi-size`): image 245,768 B, 229,368 B free below the NVM3 base (51.7% used); RAM 15,904 B static of 32,768, heap fills the rest; NVM3 40,960 B.
+
+**ASSERTED-but-untested**
+
+- That the existing `.out` is exactly HEAD's build (timestamps, empty source diff since `75b0a61`, and text size 244988 = the AA record all agree; the build was not watched).
+- All B1(c) / B3 options and their costs; the B7 timing estimates; that holding a sensitivity button > 4 s steps again; the amber-off-after-STOP_ALL behaviour on the bed; why the HEAD pair did not run in hold 9 (lines 201-204).
+- That the AA fix holds on the iPhone and at van distance (PRE_SHIP F12).
+
+**Open**
+
+- QUESTIONS (handoff f): the 22/23 count; "Bed is level" (REGRESSION 6.1/6.8 cannot pass as written); unsupervised pulse phase; the ineffective re-baseline; raise margin in auto-level; hold 9's HEAD pair; bootloader vs the app at 0x0 and the ~240 KiB image; amber after STOP_ALL; collision result code during app holds; settings-mode details; PRE_SHIP structure; unconditional console prints.
+- Everything in `docs/PRE_SHIP.md`.
+
+**The next session must NOT assume**
+
+- ...that the AA mechanism is known: the fix is verified on a Galaxy S23 at desk range; the device probably slept in EM1, and why writes arrived late is still not established.
+- ...that the iPhone or a van-distance run has been tested with `75b0a61`: neither has.
+- ...that "Bed is level" printing is a usable pass criterion: the flag behind it is never set.
+- ...that the app-row "why" lines in PRE_SHIP.md were checked against the app code: they come from the prompt.
+- ...that BLE_GATT_DESIGN §10's "~53 KB app" is current: the image is ~240 KiB.
