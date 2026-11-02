@@ -1532,3 +1532,57 @@ Prompt Y rulings record above.
 - ...that "Bed is level" printing is a usable pass criterion: the flag behind it is never set.
 - ...that the app-row "why" lines in PRE_SHIP.md were checked against the app code: they come from the prompt.
 - ...that BLE_GATT_DESIGN §10's "~53 KB app" is current: the image is ~240 KiB.
+
+## 2026-11-02 — Prompt AE: LEVELED bit, amber after STOP_ALL, BED LIGHTS on release, PRE_SHIP rows; Part A stopped and reported
+
+**Reviewer rulings recorded (Prompt AE part E)**
+
+- Prompt AC QUESTIONS 1: accepted - 23 hold-end lines, and both gap ranges
+  (121-181 ms over the AUTO LEVEL holds, 119-181 ms over all 23).
+- QUESTIONS 10: "erase needs a reboot" is fixed with the settings work
+  (Phase 2); the held sensitivity button's repeat-stepping every 2 s stays.
+- QUESTIONS 11: the PRE_SHIP.md structure is accepted (owners, closing rule,
+  the separate "also recorded" table).
+- QUESTIONS 3, 4, 5, 6, 12 and AC B1(a)'s blind window became PRE_SHIP rows
+  F20-F25; QUESTIONS 7 extended F17 (bootloader and flash layout need their
+  own design). QUESTIONS 2, 8 and 9 are Prompt AE parts B, C and A.
+
+**Commits**
+
+- `ef36909` — B: Bed Status flag bit 4 = LEVELED; "Bed is level" now prints on every successful auto-level end; bench print behind new `BED_DEBUG_LEVELED_LOG` 1 (PRE_SHIP F19); DECISIONS #46; BLE_GATT_DESIGN §6; REGRESSION 6.1/6.8 reworded, 6.10 added. Also commits the Prompt AE prompt file.
+- `f3a762e` — C: `app_stop_all()` turns amber back on when the lights are on (not in settings mode); REGRESSION §8 item.
+- `3fb1a0c` — D: BED LIGHTS toggles on the release of a short press; the press still force-stops an app move at once; DECISIONS #47; REGRESSION 7.1 and §8 (8.a-8.d).
+- `e3cc865` — E: PRE_SHIP rows F20-F25, F17 extended, "also recorded" rows annotated.
+- No commit for **Part A** (see Open). The handoff `docs/handoffs/fw_HANDOFF_2026-11-02_01_collision-result-leveled-bit-lights-release.md` and this entry are committed together after `e3cc865`.
+
+**VERIFIED**
+
+- Start state matched the prompt: HEAD `01315cd` = `origin/main` after `git fetch`; only `.projectlinkstore` modified and the prompt file untracked.
+- Builds: clean (exit 0, no `warning`/`error` lines) at the baseline and after each of B, C, D, E; also with `BED_DEBUG_LEVELED_LOG` 0 (temporary edit, reverted). Image text 245,188 B (was 244,988).
+- Host test `test/bed_control_test.c` compiled with MinGW gcc and passed (0 checks failed) after the B header change. `bed_control.c` is unchanged in this session.
+- `BED_BENCH_PROVOKE_RUNAWAY` 0 (`switch_input.c:98`), `BLE_BENCH_WIPE_BONDS` 0 (`ble_bed_service.c:70`), `BED_CAPTURE_MOTOR_CURRENTS` 0 (`debug_capture.h:21`).
+- From code (`ef36909`..`e3cc865`): bit 4 sits in byte 0, which `status_flags_changed()` already compares, so a change notifies at once; every collision trip is declared inside `run_motor_supervision()`; no Protocol Version, GATT, `config/` or `autogen/` change.
+- **From code, Part A:** nothing on the app command path checks `any_collision`. `service_move_watchdog()` clears only `app_move_active` at a trip (`ble_bed_service.c:579-586`), so the next MOVE_START repeat of a still-held app button calls `bed_move_start()` + `app_apply_move_outputs()` (`:774-784`) during the collision sequence. Clearing `app_auto_level_active` as A2 asks would make the AUTO_LEVEL_START repeat restart auto-level the same way (`:817-825`). So A2's "the following repeats start nothing" cannot come from clearing the flags; it needs a further rule, and the prompt says to stop and report options in that case.
+
+**ASSERTED-but-untested** (nothing in this session ran on the bed)
+
+- All of B, C and D behave as described in DECISIONS #46/#47 and the handoff.
+- **Today's firmware re-energises the pair into the obstruction about 100 ms after a collision trip during a held app MOVE** (the repeat restarts the move while the 1.5 s collision sequence runs, with supervision gated off), and repeats that cycle after the sequence. Read from code only; no bench record of a collision during a held app move with what follows was found.
+- A BED LIGHTS press stops an app move on the press but does not latch the #36 inhibit, so the app's next repeat (~100 ms) can restart the bed while BED LIGHTS is still held. Pre-existing; unchanged by D.
+- REGRESSION 8.d asks the bench to record that.
+
+**Open**
+
+- **Part A not implemented.** Options and a recommended rule are written out in the handoff (b.A); the reviewer picks. Until it lands: do not test a collision while holding an app MOVE button (from code, the bed drives back into the obstruction).
+- BLE_GATT_DESIGN §7 (0x06) and the A DECISIONS entry are not written (part of A).
+- QUESTIONS in the handoff (f): Part A's rule; "Bed is level" in all four success outcomes vs. only "both levelled"; the settings-mode guard on the amber restore; a >5 s BED LIGHTS hold whose settings entry was blocked still toggles on release; lights presses not latching the #36 inhibit.
+- Bench: REGRESSION 6.1, 6.10, §8 (incl. 8.a-8.d), 7.1, and the part-F lines in the handoff.
+
+**The next session must NOT assume**
+
+- ...that a collision during an app hold sends any Command Result, or that 0x06 exists: neither is implemented.
+- ...that a held app button stays still after a collision: from code it does not, for MOVE holds.
+- ...that LEVELED, the amber restore or the BED LIGHTS release toggle work on the bed: built, not run.
+- ...that `BED_DEBUG_LEVELED_LOG` ships at 1: it is a bench flag (PRE_SHIP F19).
+- ...that PRE_SHIP line references in F20-F25 are at HEAD: like the rest of that file they are at `6796e6b` unless marked.
+- User direction after the Part A stop: Part A comes in a new prompt; not implemented here. The handoff lists the collision-restart finding first under QUESTIONS FOR REVIEW.
