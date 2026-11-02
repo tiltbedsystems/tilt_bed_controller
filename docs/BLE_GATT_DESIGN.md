@@ -367,6 +367,48 @@ Notify, 2 bytes: `{ seq u8, result u8 }`, echoing the command's seq.
 | 0x03 | REJECTED_SETTINGS_MODE | "Bed is in settings mode" |
 | 0x04 | REJECTED_INVALID | malformed / unknown opcode |
 | 0x05 | WATCHDOG_STOP | connection stalled; movement stopped |
+| 0x06 | COLLISION_STOP | Collision: the app ends its hold and shows the collision screen (see below) |
+
+**COLLISION_STOP (0x06), DECISIONS #48.** Sent in two cases:
+
+1. **Once, at the trip**, when a collision trips during an app hold (MOVE or
+   AUTO LEVEL - the dead-man watchdog is armed), echoing `last_move_seq` (the
+   seq of the last accepted MOVE_START / AUTO_LEVEL_START of that hold). The
+   motors are already off; the collision sequence (LED blink, the reverse for a
+   move, ~1.5 s) runs as for any collision. No WATCHDOG_STOP follows: the
+   watchdog is cancelled at the trip.
+2. **In answer to every MOVE_START and AUTO_LEVEL_START** from the control
+   connection while the firmware's collision latch is set (the trip above, and
+   the app has not released since) **or while any collision sequence runs**
+   (Bed Status flag bit 0 set - including one from the physical controller),
+   echoing that command's own seq. The command starts nothing and does not arm
+   the watchdog.
+
+The latch clears when the app releases: MOVE_STOP, AUTO_LEVEL_STOP, STOP_ALL
+(from either connection), the control connection dropping while the app holds
+the bed, or `MOVE_WATCHDOG_MS` (300 ms) with no MOVE_START / AUTO_LEVEL_START
+from the app. A press after that, once the collision sequence has ended, is a
+normal start. Checked after the viewer and settings-mode rejections and before
+the #36 two-source check, so a viewer still gets 0x02, settings mode 0x03, and
+the app is told "collision", not "wall switch".
+
+App behaviour: on 0x06, end the hold (stop repeating; a MOVE_STOP /
+AUTO_LEVEL_STOP is fine) and show the collision screen until the user lifts
+the finger; a new press is a new hold. The firmware does not rely on this for
+the hold that collided: its repeats are refused until it releases. It does
+rely on it for one case: a **new** press made while the collision sequence is
+still running (released and pressed again within ~1.5 s) is refused only
+until the sequence ends, because it did not set the latch - if the app keeps
+repeating that press past the end of the sequence, the next repeat starts the
+bed (with current supervision running again).
+
+**Protocol version: additive within v1, no version change.** The code was
+unused and the byte layout is unchanged; a client that does not know 0x06
+gets a result code it has no entry for, as for any future code. The
+Protocol Version value stays `01`; the after-first-ship rule in §6 is
+unchanged by this. The app repository's copy of this document was written
+earlier and will be brought into line by the next app prompt; **this copy is
+authoritative.**
 
 Latency budget for the perceived press→motion path: connection interval
 15–30 ms (write lands next event) + one firmware tick + motor turn-on ≈
@@ -498,6 +540,8 @@ app command force-stops; STOP_ALL from either).
    unchanged; SET while moving returns BUSY; value survives power cycle.
 7. Pairing window: bond attempt outside settings mode rejected; inside, ok.
 8. Collision during app-commanded move: trip + reverse + LED sequence
-   unchanged; app sees collision flag within one notify interval.
+   unchanged; app sees collision flag within one notify interval, and gets
+   COLLISION_STOP (0x06, §7); the held button starts nothing until released
+   (DECISIONS #48, REGRESSION §5).
 9. OTA: full DFU cycle; DFU attempt while moving refused by app UI;
    power-pull mid-DFU recovers to AppLoader (re-flashable, not bricked).

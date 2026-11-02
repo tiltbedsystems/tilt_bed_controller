@@ -2418,3 +2418,136 @@ the pass after the debounced press, as before.
 ### Status
 
 Builds clean (no warnings). **Not run on the bench.**
+
+## 48. A collision during an app hold latches the app path: COLLISION_STOP (0x06) until the app releases
+
+Date: 2026-11-02. Reviewer's Prompt AF, implementing **Option 1** of the
+Prompt AE handoff (`fw_HANDOFF_2026-11-02_01_...`, b.A.3), accepted by the
+reviewer and Andrew on 2026-11-02. **Prompt AE part A2 is withdrawn**: its
+"clear `app_move_active` and `app_auto_level_active`, so the following repeats
+start nothing" was wrong - the AE handoff (b.A.2) showed that clearing the
+flags is what lets a repeat restart the bed.
+
+### The defect (from code, not seen on a bed)
+
+A trip turns all motors off and sets `any_collision`
+(`motor_current_functions.c:306-307, 322-323, 366-367`). Before this entry,
+`service_move_watchdog()` then only cancelled the watchdog and cleared
+`app_move_active`, and sent no Command Result. The app repeats MOVE_START
+every 100 ms while its button is held, so the next repeat found
+`app_move_active` false and called `bed_move_start()` +
+`app_apply_move_outputs()`: **the same pair re-energised in the original
+direction, into the obstruction, ~100 ms after the trip**, while current
+supervision is gated off (`switch_input.c:934` requires `!any_collision`).
+Nothing on the app command path read `any_collision`. (An AUTO LEVEL hold did
+not restart, by accident: `app_auto_level_active` stayed set, so its repeats
+only refreshed the watchdog.)
+
+### Decision (Option 1)
+
+A collision latch on the app path, in `ble_bed_service.c` only.
+
+- **Result code** `CMD_RESULT_COLLISION_STOP 0x06` (BLE_GATT_DESIGN.md §7).
+- **At the trip** - the `if (any_collision)` branch of
+  `service_move_watchdog()` (`ble_bed_service.c:610-631`), which runs only
+  while the watchdog is armed, i.e. only during an app MOVE or AUTO LEVEL
+  hold: cancel the watchdog, clear `app_move_active` and
+  `app_auto_level_active`, set `app_collision_latched`, send 0x06 with
+  `last_move_seq`. `note_app_stopped_commanding()` is **not** called: the
+  user is still holding, and the app's half of the #36 latch stays as it is.
+- **Refusal** - in `process_pending_command()`, after the viewer and
+  settings-mode checks and before the #36 conflict check
+  (`ble_bed_service.c:783-805`), for MOVE_START and AUTO_LEVEL_START only:
+  if `app_collision_latched || any_collision` -> `note_app_commanding()`, send
+  0x06 with the command's own seq, return. No bed_control call, no
+  `last_move_seq` update, no watchdog arm.
+- **Release** - `note_app_stopped_commanding()` clears the latch
+  (`ble_bed_service.c:572-587`), so every existing release clears it. Its
+  callers after the change: MOVE_STOP (`:871`), AUTO_LEVEL_STOP (`:910`),
+  STOP_ALL (`:716`, from either role), the control-phone disconnect stop
+  (`:1095`), the silence timeout in `service_app_commanding()` (`:599`;
+  `MOVE_WATCHDOG_MS` = 300 ms after the last MOVE_START / AUTO_LEVEL_START,
+  refused ones included), and the watchdog expiry (`:665`), which cannot run
+  while latched because nothing arms the watchdog while latched.
+- **The `|| any_collision` term stays** (reviewer ruling). It also refuses an
+  app motion start during the collision sequence after ANY trip, including a
+  physical-controller collision with the app idle, and a repeat processed in
+  the trip pass itself (`process_pending_command()` runs before
+  `service_move_watchdog()` in the same tick). It does not set the latch.
+  Window, from code: `any_collision` is set at the trip (pass N) and cleared by
+  the collision block (`app.c:609-618`) in the first pass after the third
+  expiry of the 500 ms periodic LED timer, which that block starts at the top
+  of pass N+1 (`app.c:589-597`, `COLLISION_BLINK_CYCLES 3`). So **1500 ms,
+  plus the gap from the trip to pass N+1, plus the wake latency after the
+  third timer expiry** - each at most about one BLE connection or advertising
+  interval (15-30 ms) when the CPU sleeps between passes, less when it is
+  awake.
+- **The physical controller is not affected**: no change to switch_input.c,
+  bed_control.c, the collision sequence in app.c or the motor-current code. A
+  physical collision sends no Command Result (no command); the app learns of
+  it from Bed Status flag bit 0 as before.
+- Bench print behind `BLE_DEBUG_WATCHDOG_LOG`: `BLE: COLLISION_STOP seq=N
+  op=0x0M (latched)` at the trip, and `BLE: collision latch cleared (<reason>),
+  K repeats refused` (reason: stop / stop_all / disconnect / silence; K counts
+  the 0x06 refusals since the app last released) - both printed after the
+  stop and the Command Result, main-loop context.
+
+### Options rejected (AE handoff b.A.3)
+
+- **Option 2, reuse the #36 two-source latch** (set bed_control's
+  `conflict_inhibit` at a trip). The repeats would get 0x01
+  FORCE_STOPPED_OTHER_SOURCE, which tells the user "wall switch is in
+  control" - wrong; the latch would also refuse the **physical** controller
+  until the app released, changing physical behaviour; and it mixes a
+  collision into the two-source mechanism the host test covers.
+- **Option 3, keep the flags set instead of clearing them.** For MOVE this is
+  Option 1 under another name: `service_move_watchdog()` clears
+  `app_move_active` when the bed goes idle at the end of the sequence, and
+  the restart follows. It also contradicted A2's wording.
+- **Option 4, app only** (send 0x06, the app stops repeating). Not sufficient:
+  a lost notification, or an app that does not handle 0x06, leaves the
+  restart in place. The firmware rule is needed whatever the app does.
+
+### Interactions found while implementing (ASSERTED from code)
+
+- **Sleep veto (#45).** While latched the watchdog is not armed, so
+  `ble_bed_service_app_hold_active()` is false and the app hold no longer
+  vetoes sleep. Nothing the app commands moves under the latch. What can move
+  is the collision sequence's own reverse (a move only; auto-level has none,
+  `dual_motor_control.c:300-343`, default case), which `set_dual_motors_on()`'s
+  `motor_state[].motor_on` or the `motor_outputs_maybe_on()` shadow keep in EM0
+  (`app_is_ok_to_sleep()`, `app.c:510-560`); and the physical controller after the sequence, which has
+  its own vetoes. Main-loop passes still run on every BLE event, so refusals
+  and the silence clear are serviced.
+- **The runaway fail-safe shortens the reverse after an app collision.**
+  During the reverse `ble_bed_service_app_motion_active()` is false (both app
+  flags cleared at the trip) and no physical switch is down, so
+  `motion_failsafe_tick()` (`switch_input.c:804-896`; 50 ms samples, 3 to
+  confirm) de-energises the reverse ~150-200 ms after it starts and prints
+  `FAILSAFE: motors energised with nothing commanding - stopped`. The same
+  already happens after a physical collision once the button is released.
+  Not changed here (QUESTIONS in the AF handoff).
+- **The disconnect release is conditional.** `handle_connection_closed()`
+  sets `disconnect_stop_pending` only if `bed_active_source() ==
+  BED_SOURCE_APP` (`ble_bed_service.c:993`). During the collision sequence
+  that holds; after it, `bed_control_tick()` has returned the source to NONE,
+  so a drop then does not go through the disconnect stop and the latch clears
+  by the silence timeout instead, 300 ms after the last write the bed
+  received. Either way it is clear before a reconnect is expected to deliver a
+  command, and a command that did arrive while latched would be refused.
+- **STOP_ALL is accepted from a viewer** (#4, #12) and so clears the latch
+  even if the control phone's user is still holding. A still-repeating
+  control app would then be refused only while the sequence runs and would
+  restart after it - the same as a viewer STOP_ALL during an ordinary hold
+  today.
+- **A new press inside the sequence** (released and pressed again within
+  ~1.5 s) is refused by `any_collision` but does not set the latch: if the app
+  keeps repeating it past the end of the sequence, the next repeat starts the
+  bed, with supervision running.
+
+### Status
+
+Builds clean (no warnings, `BLE_DEBUG_WATCHDOG_LOG` 1 and 0). The host test
+(`test/bed_control_test.c`) is unchanged and passes; it cannot reach this
+code (it compiles bed_control.c only). **Not run on the bench.** REGRESSION §5,
+items marked #48.

@@ -175,6 +175,7 @@ void ble_bed_service_encode_status(const bed_status_t *in, bool tilt_fresh, uint
 #define CMD_RESULT_REJECTED_SETTINGS_MODE     0x03
 #define CMD_RESULT_REJECTED_INVALID           0x04
 #define CMD_RESULT_WATCHDOG_STOP              0x05
+#define CMD_RESULT_COLLISION_STOP             0x06 // DECISIONS #48
 #define CMD_RESULT_LEN                        2
 
 // Dead-man watchdog (BLE_GATT_DESIGN.md #5). Milliseconds via sleeptimer,
@@ -280,6 +281,14 @@ static uint8_t  wd_diag_hold_end_seq = 0;
 static uint16_t wd_diag_hold_end_refreshes = 0;
 static uint16_t wd_diag_hold_end_longest_gap_ms = 0;
 static uint32_t wd_diag_hold_end_longest_between_ticks = 0;
+// Collision latch (DECISIONS #48): motion starts refused with COLLISION_STOP
+// since the app last released, and the "latch cleared" line, latched by
+// note_app_stopped_commanding() and printed by ble_bed_service_tick() once
+// the stop that cleared it has been done.
+static uint16_t wd_diag_collision_refused = 0;
+static bool        wd_diag_latch_clear_pending = false;
+static const char *wd_diag_latch_clear_reason = "";
+static uint16_t    wd_diag_latch_clear_refused = 0;
 
 void ble_bed_service_debug_pass_begin(void)
 {
@@ -320,6 +329,16 @@ static bed_direction_t app_move_dir    = BED_DIR_UP;
 // app_auto_level_start() resets first_check, leveling_success[] and the axis,
 // so calling it ten times a second would mean levelling never progressed.
 static bool app_auto_level_active = false;
+
+// Collision latch (DECISIONS #48). Set when a collision trips during an app
+// hold, while the user is still holding the app button. Every MOVE_START and
+// AUTO_LEVEL_START is then answered COLLISION_STOP and starts nothing, until
+// the app releases - an explicit stop, STOP_ALL, the control-phone
+// disconnect, or MOVE_WATCHDOG_MS of silence, i.e. every caller of
+// note_app_stopped_commanding(). Without it the held button's next repeat
+// re-energised the same pair, into the obstruction, during the collision
+// sequence.
+static bool app_collision_latched = false;
 
 // Whether the app is still asking for motion, for the two-source inhibit
 // (#36). Refreshed by every MOVE_START/AUTO_LEVEL_START, INCLUDING refused
@@ -548,11 +567,23 @@ static void note_app_commanding(void)
 }
 
 // The app has stopped asking for motion - an explicit stop, a disconnect, or
-// the silence timeout below. Releases its half of the two-source inhibit.
-static void note_app_stopped_commanding(void)
+// the silence timeout below. Releases its half of the two-source inhibit, and
+// the collision latch (#48). reason is only for the bench print.
+static void note_app_stopped_commanding(const char *reason)
 {
   app_commanding = false;
   bed_note_source_released(BED_SOURCE_APP);
+#if BLE_DEBUG_WATCHDOG_LOG
+  if (app_collision_latched) {
+    wd_diag_latch_clear_pending = true;
+    wd_diag_latch_clear_reason = reason;
+    wd_diag_latch_clear_refused = wd_diag_collision_refused;
+  }
+  wd_diag_collision_refused = 0;
+#else
+  (void)reason;
+#endif
+  app_collision_latched = false;
 }
 
 // Main-loop context. The dead-man period doing its second job: no motion
@@ -565,7 +596,7 @@ static void service_app_commanding(void)
   }
   // Signed difference so this is correct across tick-counter wraparound.
   if ((int32_t)(sl_sleeptimer_get_tick_count() - app_command_deadline_tick) >= 0) {
-    note_app_stopped_commanding();
+    note_app_stopped_commanding("silence");
   }
 }
 
@@ -577,11 +608,26 @@ static void service_move_watchdog(void)
   }
 
   if (any_collision) {
-    // The collision handler owns the stop and its LED sequence from here.
+    // A collision tripped during an app hold (the watchdog is armed only
+    // then). The motors were turned off at the trip, earlier in this pass,
+    // and the collision handler owns the stop and its LED sequence from here.
     // Nothing left for the watchdog to guard, and letting it expire into an
     // app_stop_all() would cut across that sequence.
+    //
+    // The user is still holding the app button, so latch (#48): the repeats
+    // that follow are refused and start nothing. NOT note_app_stopped_
+    // commanding() - the app has not released, and its half of the #36
+    // latch stays as it is.
     move_watchdog_cancel();
     app_move_active = false;
+    app_auto_level_active = false;
+    app_collision_latched = true;
+    send_command_result(control_connection, last_move_seq, CMD_RESULT_COLLISION_STOP);
+#if BLE_DEBUG_WATCHDOG_LOG
+    // After the motors are off and the result is sent.
+    printf("BLE: COLLISION_STOP seq=%u op=0x%02x (latched)\r\n",
+           last_move_seq, wd_diag_refresh_opcode);
+#endif
     return;
   }
 
@@ -616,7 +662,7 @@ static void service_move_watchdog(void)
   move_watchdog_cancel();
   app_move_active = false;
   app_auto_level_active = false;   // hold-to-run auto-level is watchdogged too (#36)
-  note_app_stopped_commanding();
+  note_app_stopped_commanding("watchdog");
   app_stop_all();
   send_command_result(control_connection, last_move_seq, CMD_RESULT_WATCHDOG_STOP);
 #if BLE_DEBUG_WATCHDOG_LOG
@@ -667,7 +713,7 @@ static void process_pending_command(void)
     move_watchdog_cancel();
     app_move_active = false;
     app_auto_level_active = false;
-    note_app_stopped_commanding(); // never inhibited, and releases the latch
+    note_app_stopped_commanding("stop_all"); // never inhibited, and releases the latch
     app_stop_all();                // STOP_ALL keeps its full everything-off behaviour
 
     // Accepted from ANY role - control or viewer. DECISIONS #12's
@@ -731,6 +777,29 @@ static void process_pending_command(void)
 
   if (app_in_settings_mode()) {
     send_command_result(conn, seq, CMD_RESULT_REJECTED_SETTINGS_MODE);
+    return;
+  }
+
+  // Collision latch (#48). Motion-starting opcodes only, and before the #36
+  // check so the app is told "collision", not "wall switch". Refused while
+  // latched (a collision during this app hold, button not yet released), and
+  // also while ANY collision sequence runs - a quick release and press inside
+  // the sequence, or a press during a physical-controller collision, would
+  // otherwise re-energise a pair while current supervision is off
+  // (switch_input_tick() requires !any_collision).
+  //
+  // note_app_commanding() as in the #36 refusal: a refused repeat still means
+  // the user is holding, so the silence timeout must not release the latch.
+  // No bed_control call, no last_move_seq update, no watchdog arm.
+  if ((opcode == CMD_OPCODE_MOVE_START || opcode == CMD_OPCODE_AUTO_LEVEL_START)
+      && (app_collision_latched || any_collision)) {
+    note_app_commanding();
+    send_command_result(conn, seq, CMD_RESULT_COLLISION_STOP);
+#if BLE_DEBUG_WATCHDOG_LOG
+    if (wd_diag_collision_refused < 0xFFFF) {
+      wd_diag_collision_refused++;
+    }
+#endif
     return;
   }
 
@@ -799,7 +868,7 @@ static void process_pending_command(void)
       }
       move_watchdog_cancel();
       app_move_active = false;
-      note_app_stopped_commanding();
+      note_app_stopped_commanding("stop");
       bed_move_stop(BED_SOURCE_APP); // stop-class: always reports true
       app_apply_stop_outputs();
       result = CMD_RESULT_ACCEPTED;
@@ -838,7 +907,7 @@ static void process_pending_command(void)
       }
       move_watchdog_cancel();
       app_auto_level_active = false;
-      note_app_stopped_commanding();
+      note_app_stopped_commanding("stop");
       bed_auto_level_stop(BED_SOURCE_APP); // stop-class: always reports true
       app_apply_stop_outputs();            // clears the red/green auto-level LEDs
       result = CMD_RESULT_ACCEPTED;
@@ -1023,7 +1092,7 @@ void ble_bed_service_tick(void)
     move_watchdog_cancel();
     app_move_active = false;
     app_auto_level_active = false;
-    note_app_stopped_commanding(); // the app is gone - release its half of the latch
+    note_app_stopped_commanding("disconnect"); // the app is gone - release its half of the latch
     app_stop_all();
   }
 
@@ -1044,6 +1113,13 @@ void ble_bed_service_tick(void)
            wd_diag_hold_end_opcode, wd_diag_hold_end_seq,
            (unsigned)wd_diag_hold_end_refreshes, (unsigned)wd_diag_hold_end_longest_gap_ms,
            (unsigned long)sl_sleeptimer_tick_to_ms(wd_diag_hold_end_longest_between_ticks));
+  }
+  // The collision latch (#48) was released above; the stop that released it
+  // is done.
+  if (wd_diag_latch_clear_pending) {
+    wd_diag_latch_clear_pending = false;
+    printf("BLE: collision latch cleared (%s), %u repeats refused\r\n",
+           wd_diag_latch_clear_reason, (unsigned)wd_diag_latch_clear_refused);
   }
 #endif
 

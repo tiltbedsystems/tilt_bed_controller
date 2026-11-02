@@ -187,6 +187,56 @@ log `sampler_bench.log`; full figures in DECISIONS #41 "Bench result"):**
       ceiling: verify `TRIPPED MAX LOAD` on a deliberately stalled motor
 - [ ] ⚡ BLE link stays up (no disconnect) through the collision sequence
 
+**Collisions during app holds (DECISIONS #48).** App connected as CONTROL,
+`BLE_DEBUG_WATCHDOG_LOG` 1, UART logged. Use the rigid obstruction; one
+pair is enough. With an app that does not yet handle COLLISION_STOP (0x06)
+it keeps repeating while the finger is down, which is the case these items
+test. With an app that does handle it, the hold ends at the first 0x06 and
+the latch clears at once (`stop`) or 300 ms later (`silence`); the motors
+must do the same in both cases.
+
+- [ ] 5.A1 Collision during an app **MOVE** hold (B1). Raise into the
+      obstruction from the app, keep the finger down ~3 s after the trip,
+      release, wait, press again (away from the obstruction).
+      Observe: trip lines, then **in the same burst** `BLE: COLLISION_STOP
+      seq=N op=0x01 (latched)` and `BLE: hold end op=0x01 seq=N ...`; then
+      `Once`; LED blink; the brief reverse at blink 2 (expect a
+      `FAILSAFE: motors energised with nothing commanding - stopped` line
+      during it - ASSERTED, see #48); everything off at ~1.5 s. **The pair
+      does not re-energise toward the obstruction at any point while the
+      finger is held.** On release: `BLE: collision latch cleared (stop), K
+      repeats refused` with K ≈ 10 per second held. The new press moves
+      normally (no 0x06). App: 0x06 for the held button (if it shows result
+      codes); Bed Status bit 0 set for ~1.5 s.
+- [ ] 5.A2 Collision during an app **AUTO LEVEL** hold (B2). Obstruct a
+      levelling pair, keep holding ~3 s after the trip, release, press again
+      (obstruction removed). Observe: trip lines, `BLE: COLLISION_STOP seq=N
+      op=0x03 (latched)`, `BLE: hold end op=0x03 ...`, `Once`; LED blink, **no
+      reverse and no motion at all** until the release; `BLE: collision latch
+      cleared (stop), K repeats refused`. The new press starts a fresh
+      auto-level run (`Step 1` prints).
+- [ ] 5.A3 Release and re-press inside the collision sequence (B3). As 5.A1,
+      but release ~0.5 s after the trip and press the **same** button again at
+      once, and hold. Observe: `BLE: collision latch cleared (stop), K repeats
+      refused` at the release; **nothing moves toward the obstruction while
+      the LEDs blink** (the reverse at blink 2 may still run); at the end of
+      the sequence (~1.5 s after the trip) an app that is still repeating
+      **starts the move again** - expected under #48 (the re-press did not
+      set the latch), with supervision running, so it trips again at the
+      obstruction. Record the time from the end of the blink to the move.
+- [ ] 5.A4 STOP_ALL during the latch (B5). As 5.A1, but while still holding
+      after the trip press the app's STOP (STOP_ALL) - once inside the blink
+      sequence, once after it. Observe: `BLE: collision latch cleared
+      (stop_all), K repeats refused`; inside the sequence nothing moves
+      toward the obstruction until it ends; after it, an app still repeating
+      the held move **starts the move again** on its next repeat (as STOP_ALL
+      during any ordinary hold). App: 0x00 for the STOP_ALL.
+- [ ] 5.A5 Physical-controller collision unchanged: raise into the obstruction
+      from the switch panel with the app connected and idle. No `BLE:
+      COLLISION_STOP` line, no Command Result; Bed Status bit 0 set for
+      ~1.5 s. An app MOVE press made and released during the blink gets 0x06
+      and starts nothing.
+
 ## 6. Auto-level
 
 Starting condition for 6.1: frame tilted several degrees in both roll and
