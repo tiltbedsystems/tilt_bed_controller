@@ -555,7 +555,8 @@ static void process_outputs()
           break;
 
       case SWITCH_BED_LIGHTS:
-          if ((switch_pressed) && (switch_driving == SWITCH_BED_LIGHT_VALUE)){
+          // Nothing on the press: the lights change on the release (#47).
+          if ((!switch_pressed) && (switch_driving == SWITCH_BED_LIGHT_VALUE)){
               if (app_lights_on()){
                   set_LED_on(LED_AMBER);
                   set_underbed_lighting_on();}
@@ -563,7 +564,6 @@ static void process_outputs()
                   set_LED_off(LED_AMBER);
                   set_underbed_lighting_off();
               }
-          } else if ((!switch_pressed) && (switch_driving == SWITCH_BED_LIGHT_VALUE)){
               switch_driving = OFF;
               active_switch = OFF;
           }
@@ -663,16 +663,29 @@ static void process_inputs()
             break;
 
         case SWITCH_BED_LIGHTS:
+            // The lights toggle on the RELEASE of a short press (DECISIONS.md
+            // #47), so that holding BED LIGHTS into settings mode does not
+            // cycle them. The press still goes through bed_control at once,
+            // with the lights' CURRENT state: it changes nothing, but it takes
+            // the bed for the switches - which is what the settings-mode entry
+            // hold needs - and an app move is force-stopped on the press, not
+            // the release (#12).
             if (switch_pressed && (switch_held == OFF)){
                 switch_held = SWITCH_BED_LIGHT_VALUE;
-                if (bed_lights_set(BED_SOURCE_SWITCHES, !app_lights_on())) {
+                if (bed_lights_set(BED_SOURCE_SWITCHES, app_lights_on())) {
                     switch_driving = SWITCH_BED_LIGHT_VALUE;
                 }
             } else if ((!switch_pressed) && (switch_held == SWITCH_BED_LIGHT_VALUE)){
                 switch_held = OFF;
                 /*** For "Settings Mode" ***/
                 settings_mode_cancel_entry();
-
+                // A short press: released before settings mode was entered. A
+                // hold that reached settings mode is released in the settings
+                // branch and never gets here. Toggle only if the press was
+                // accepted; process_outputs() below drives the outputs.
+                if (switch_driving == SWITCH_BED_LIGHT_VALUE) {
+                    bed_lights_set(BED_SOURCE_SWITCHES, !app_lights_on());
+                }
             }
             break;
 

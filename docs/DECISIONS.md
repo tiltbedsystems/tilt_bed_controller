@@ -2325,3 +2325,96 @@ Bluetooth stack callback.
 ### Status
 
 Builds clean (no warnings). **Not run on the bench.**
+
+## 47. BED LIGHTS toggles the lights on the release of a short press
+
+Date: 2026-11-02. User decision 2026-11-02, implemented per the reviewer's
+Prompt AE part D. Replaces the toggle-on-press behaviour (Prompt AC handoff
+B3: "entering settings mode toggles the under-bed lights").
+
+### Decision
+
+Holding BED LIGHTS to enter settings mode must not cycle the lights.
+
+- The lights toggle when a **short press is released**. A short press is one
+  **released before the settings-mode entry completes**: the 5 s entry timer
+  (`settings_mode.c:281-289`) has fired and `settings_mode_tick()` has set
+  `in_settings_mode` before the release is delivered -> not short.
+- A hold that reaches settings mode does **not** toggle the lights.
+- A press while in settings mode exits settings mode and does **not** toggle
+  the lights (unchanged).
+- Safety rule unchanged (DECISIONS #12): a BED LIGHTS press while the app is
+  moving the bed force-stops it **on the press**. Only the toggle moves to the
+  release.
+
+Examples: released at 4.9 s -> settings mode was not entered, the release is
+handled in normal mode -> **toggle**. Released at 5.1 s -> settings mode was
+entered at 5.0 s (plus at most one loop pass), the release is handled by the
+settings branch -> **no toggle**, settings mode active. The boundary is the
+moment `settings_mode_tick()` acts on the timer against the moment the
+sampler delivers the debounced release (10-20 ms after the contact opens,
+DECISIONS #41); `settings_mode_tick()` runs before `switch_input_tick()` in
+each pass, and its entry test reads the sampler's debounced state, which
+still says "down" until the release is debounced. The 5 s is measured from
+the pass after the debounced press, as before.
+
+### Implementation (`switch_input.c`)
+
+- **Press** (`:665-677`): `bed_lights_set(BED_SOURCE_SWITCHES,
+  app_lights_on())` - the current state, so nothing changes. It still runs
+  arbitration: if the app holds the bed it is force-stopped now and the call
+  returns false (no `switch_driving`); otherwise the switches take the bed and
+  `app_lights_set()` sets `active_switch = SWITCH_BED_LIGHT_VALUE`, which the
+  settings-mode entry test needs.
+- **Release in normal mode** (`:678-689`): as before `switch_held = OFF` and
+  `settings_mode_cancel_entry()`; then, only if this press was accepted
+  (`switch_driving == SWITCH_BED_LIGHT_VALUE`), `bed_lights_set(BED_SOURCE_
+  SWITCHES, !app_lights_on())` - the toggle, through bed_control like every
+  other switch command.
+- **`process_outputs()`** (`:557-570`): the press arm no longer writes the
+  outputs; the release arm writes amber and `EN_LIGHTING` from
+  `app_lights_on()` and then, as before, clears `switch_driving` and
+  `active_switch`.
+- Release in settings mode: unchanged - the settings branch
+  (`settings_mode.c:257-261`) only clears `active_switch`.
+- `bed_control.c` is unchanged; no new verb. The host test
+  (`test/bed_control_test.c`) still passes.
+
+### Every other path this touches, after the change
+
+- **Double press.** During a BED LIGHTS hold the double-press check runs, as
+  before (`active_switch` is BED LIGHTS and the switches hold the bed,
+  `switch_input.c:921-944`). A second button down -> `Double Press Error`,
+  panel state cleared -> the BED LIGHTS release matches nothing -> **no
+  toggle**. Before, the lights had already toggled on the press. A BED LIGHTS
+  press while another button is already down is not delivered at all (the
+  sampler ignores presses with two down) -> no toggle, as before.
+- **Motion fail-safe.** No motor is involved; a BED LIGHTS hold counts as a
+  switch down, as before. Unchanged.
+- **Sampler release-first ordering.** A BED LIGHTS release and another
+  button's press in the same sample: the release is delivered first, so the
+  toggle happens and `active_switch` returns to OFF before the other press is
+  handled. The order is unchanged; the toggle now happens inside it.
+- **Arbitration.** Press: as before (force-stop of an app move on the press,
+  no toggle afterwards because the press was refused). Release: a second
+  bed_control call. In the normal case the switches still hold the bed, so it
+  toggles. If the app took the bed during the hold (possible only after an
+  app LIGHTS_SET force-stopped the hold and the bed went idle - see next
+  point), the release now force-stops the app's movement instead of toggling;
+  before, the release set `active_switch = OFF` underneath a running app move.
+- **Lights from the app while BED LIGHTS is held.** The app's LIGHTS_SET is
+  force-stopped (`FORCE_STOPPED_OTHER_SOURCE`), the lights do not change, and
+  `active_switch` goes to OFF, so the settings-mode entry is abandoned. The
+  physical press is still accepted, so its release toggles the lights - **even
+  if held longer than 5 s**, because settings mode was never entered (the
+  definition above).
+- **Collision during the hold.** Supervision runs during a BED LIGHTS hold
+  (PRE_SHIP F6). If a trip were declared, `process_outputs()` is skipped while
+  `any_collision` is set, so a release then would toggle `bedlights_on`
+  without writing `EN_LIGHTING` until the next lights command. The same gap
+  existed for a press before. No motor is on, so such a trip is not expected.
+  ASSERTED from code; not fixed here.
+
+### Status
+
+Builds clean (no warnings). **Not run on the bench.**

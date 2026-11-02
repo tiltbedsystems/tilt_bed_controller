@@ -284,7 +284,9 @@ open question, Prompt AC handoff.
 
 ## 7. Settings mode
 
-- [ ] ⚡ 7.1 Hold BED_LIGHTS 5 s: amber LED fast-blinks — settings mode active
+- [ ] ⚡ 7.1 Hold BED_LIGHTS 5 s: amber LED fast-blinks — settings mode active.
+      The under-bed lights do not change at the press, during the hold,
+      at entry, or at the release (DECISIONS #47)
 - [ ] 7.2 Zero-level store: hold AUTO_LEVEL; red LED on; after 2 s green LED
       on; UART prints stored ROLL/PITCH values
 - [ ] 7.3 Zero-level erase: keep holding AUTO_LEVEL 5 more s; blue LED on;
@@ -379,8 +381,23 @@ bench run), except where marked as the user's report.
 
 ## 8. Bed lights
 
-- [ ] ⚡ Tap BED_LIGHTS: under-bed lighting on, amber LED on
-- [ ] Tap again: lighting off, amber LED off
+- [ ] ⚡ Tap BED_LIGHTS: under-bed lighting on, amber LED on - **on the
+      release**, not the press (DECISIONS #47). Hold it ~1 s to see it: nothing
+      changes until you let go
+- [ ] Tap again: lighting off, amber LED off, on the release
+- [ ] 8.a Hold BED_LIGHTS ~4.5 s, release: the lights toggle on the release,
+      no settings mode (amber does not fast-blink)
+- [ ] 8.b Hold BED_LIGHTS 5 s into settings mode (amber fast-blinks), keep
+      holding 1 s, release: lighting unchanged throughout. Repeat with the
+      lights on and with them off
+- [ ] 8.c In settings mode, press BED_LIGHTS once: `Settings mode: exit`,
+      amber shows the lights state, lighting unchanged at the press and at
+      the release
+- [ ] 8.d App holding a move (or AUTO LEVEL): press and hold BED_LIGHTS -
+      the bed stops **on the press**; release: the lights do not change.
+      Note what the app's still-held button does next (DECISIONS #47; a
+      lights press does not latch the #36 inhibit, so the app's next repeat
+      may start the bed again - record it)
 - [ ] Lights state survives a motor move and a collision sequence
       (amber restored after collision blink)
 - [ ] Lights on, app STOP_ALL (with and without a move running): lighting
