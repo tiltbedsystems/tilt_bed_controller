@@ -1623,3 +1623,44 @@ Prompt Y rulings record above.
 - ...that the collision reverse runs its full 500 ms after an app collision: from code the fail-safe cuts it.
 - ...that the disconnect stop runs for every drop during the latch: only while the bed is still non-idle (during the sequence).
 - ...that `BLE_DEBUG_WATCHDOG_LOG` ships at 1: bench flag.
+
+## 2026-11-02 — Prompt AG: collision latch follow-ups (viewer STOP_ALL, refusals latch, trip arms silence)
+
+**Commits**
+
+- `3d7d8e6` — `ble_bed_service.c` only among sources: (A1) a STOP_ALL from a connection that is not the control connection, while `app_collision_latched` is set, no longer calls `note_app_stopped_commanding()` - it calls `bed_note_source_released(BED_SOURCE_APP)` instead, so it still stops everything and releases the app's #36 half, but the latch and `app_commanding` (the silence timer) stay; (A2) the `any_collision` refusal also sets `app_collision_latched`; (A3) the trip branch of `service_move_watchdog()` also calls `note_app_commanding()`. Docs: BLE_GATT_DESIGN §7 row 0x06, DECISIONS #48 "Amended by Prompt AG", REGRESSION 5.A3/5.A4/5.A5 updated and 5.A6 (viewer STOP_ALL) added, PRE_SHIP F26-F28. Prompt AG file committed.
+- The handoff `docs/handoffs/fw_HANDOFF_2026-11-02_03_collision-latch-followups.md` and this entry are committed together after `3d7d8e6`.
+
+**VERIFIED**
+
+- Start state matched the prompt: HEAD `b1991ed` (parent `e646c3b`) = `origin/main` after `git fetch`; only `.projectlinkstore` modified, the prompt untracked.
+- Builds (CLI, the prompt asks for it): ELF before = text 245,588 / data 784 / bss 72,476 (the AF record); after the edit exit 0, no warning/error lines, text 245,620 / data 784 / bss 72,476 (+32 text); `BLE_DEBUG_WATCHDOG_LOG` 0 (temporary): exit 0, no warnings, text 243,924 / data 780 / bss 72,480; back at 1: identical to the first; after the commit `ninja: no work to do`.
+- Host test `test/bed_control_test.c`: 0 checks failed. `bed_control.c` unchanged.
+- Bench flags 0: `BED_BENCH_PROVOKE_RUNAWAY` (`switch_input.c:98`), `BLE_BENCH_WIPE_BONDS` (`ble_bed_service.c:70`), `BED_CAPTURE_MOTOR_CURRENTS` (`debug_capture.h:21`); `BLE_DEBUG_WATCHDOG_LOG` back at 1 (`ble_bed_service.h:36`). No `config/`, `autogen/`, GATT or Protocol Version change.
+- From code (`3d7d8e6`): `note_app_commanding()` (`:565-570`) writes only `app_commanding` and `app_command_deadline_tick`; only `service_app_commanding()` reads them; it calls nothing in bed_control. Callers of `note_app_stopped_commanding()`: silence `:602`, watchdog `:670`, STOP_ALL `:722` (control connection, or no latch), MOVE_STOP `:889`, AUTO_LEVEL_STOP `:928`, disconnect `:1113`. The latch is set at `:628` (trip, followed by `note_app_commanding()` `:629`) and `:813` (refusal, followed by `note_app_commanding()` `:814`); `app_commanding` is cleared only in `note_app_stopped_commanding()`, which also clears the latch - so latched implies the silence timer is running.
+
+**ASSERTED-but-untested** (nothing ran on the bed)
+
+- All of handoff b (the new B1/B2/B3 tables and console lines): a re-press inside the sequence, an app press during a physical collision, and a held control button after a viewer STOP_ALL are refused until released, during and after the sequence; a control-phone STOP_ALL after the sequence still lets a held repeat restart the move (unchanged).
+- The silence clear now comes ≥300 ms after the trip (A3), up to ~100 ms later than in AF for an app that goes quiet at the first 0x06.
+- After a viewer STOP_ALL the bed is idle, so a later control-phone drop does not run the disconnect stop; the latch clears by silence (`silence` in the print).
+- Every AF ASSERTED item still stands (fail-safe cut of the reverse, the `any_collision` window, etc.).
+
+**Open**
+
+- Bench: REGRESSION 5.A1-5.A6 with `BLE_DEBUG_WATCHDOG_LOG` 1. The AF warning stands: test a collision during an app hold only with an obstruction that can safely take a second hit (soft obstruction, per the reviewer, f.8).
+- Handoff QUESTIONS (f): the disconnect release after a viewer STOP_ALL is by silence, not `disconnect`; a STOP_ALL written by the control phone but processed after a control drop + promotion is treated as a viewer's; an app release during the collision reverse cuts the reverse (pre-existing).
+- PRE_SHIP F26 (fail-safe vs reverse), F27 (BED LIGHTS vs #36), F28 (collision during a BED LIGHTS hold).
+- App repo: its copy of BLE_GATT_DESIGN §7 and the 0x06 handling.
+
+**Rulings recorded (Prompt AG C5)**
+
+- AE QUESTIONS: 1 and 2 closed by Prompt AF; 3 accepted ("Bed is level" in all four success outcomes); 4 accepted (settings-mode guard on the amber restore); 5 accepted (a blocked 5 s settings entry still toggles at the release); 6 -> PRE_SHIP F27; 7 yes, REGRESSION 8.d stays record-only until the bench; 8 -> PRE_SHIP F28.
+- AF QUESTIONS: f.1, f.2, f.7 fixed in `3d7d8e6`; f.3 -> PRE_SHIP F26; f.4 accepted; f.5 resolved by A2 (refusals now latch, so the cleared print covers them); f.6 keep REGRESSION 5.A5; f.8 agreed - the reviewer's bench test uses a soft obstruction.
+
+**The next session must NOT assume**
+
+- ...that any of the latch behaviour (AF or AG) has run on a bed: built, not run.
+- ...that STOP_ALL always clears the latch: from a viewer during a latch it does not (DECISIONS #48 amendment). The original #48 text still says "from either role" and "does not set the latch" for the `any_collision` refusal; the amendment supersedes it.
+- ...that the AF b.6 / b.10 tables for B3 and B5 are current: superseded by the AG handoff b.
+- ...that the app handles 0x06, or that the reverse runs its full 500 ms.
