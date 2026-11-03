@@ -149,8 +149,9 @@ void ble_bed_service_encode_status(const bed_status_t *in, bool tilt_fresh, uint
 #define CONN_SUPERVISION_TIMEOUT 100
 
 // Adaptive Bed Status notify cadence (BLE_GATT_DESIGN.md #6).
-#define STATUS_NOTIFY_IDLE_MS   1000
-#define STATUS_NOTIFY_MOVING_MS  100
+#define STATUS_NOTIFY_IDLE_MS       1000
+#define STATUS_NOTIFY_IDLE_LIVE_MS   200 // idle with live tilt: idle sampler or a burst (Prompt AI C3)
+#define STATUS_NOTIFY_MOVING_MS      100
 
 // Command characteristic wire format (BLE_GATT_DESIGN.md #4): 4 bytes,
 // { opcode, arg0, arg1, seq }.
@@ -214,6 +215,7 @@ static uint8_t status_subscriber_count = 0;
 static sl_sleeptimer_timer_handle_t status_notify_timer;
 static volatile bool status_notify_due = false;
 static uint8_t last_sent_status[gattdb_bed_status_len];
+static uint32_t status_notify_interval_ms = 0; // the interval the notify timer was last started with
 
 // Deferred Command write. The stack callback ONLY fills these in and returns;
 // every decision and every side effect happens later, in main-loop context,
@@ -1112,10 +1114,10 @@ static void status_notify_timer_callback(sl_sleeptimer_timer_handle_t *handle, v
   status_notify_due = true;
 }
 
-static void restart_status_notify_timer(bool moving)
+static void restart_status_notify_timer(uint32_t interval_ms)
 {
-  uint32_t interval_ms = moving ? STATUS_NOTIFY_MOVING_MS : STATUS_NOTIFY_IDLE_MS;
   uint32_t ticks = sl_sleeptimer_ms_to_tick((uint16_t)interval_ms);
+  status_notify_interval_ms = interval_ms;
   sl_sleeptimer_restart_timer(&status_notify_timer, ticks, status_notify_timer_callback, NULL, 0, 0);
 }
 
@@ -1137,7 +1139,7 @@ static bool status_flags_changed(const uint8_t *new_packed, const uint8_t *old_p
   return false;
 }
 
-static void publish_status(const uint8_t *packed, bool moving)
+static void publish_status(const uint8_t *packed, uint32_t interval_ms)
 {
   sl_bt_gatt_server_write_attribute_value(gattdb_bed_status, 0, gattdb_bed_status_len, packed);
   sl_status_t sc = sl_bt_gatt_server_notify_all(gattdb_bed_status, gattdb_bed_status_len, packed);
@@ -1145,7 +1147,7 @@ static void publish_status(const uint8_t *packed, bool moving)
 
   memcpy(last_sent_status, packed, gattdb_bed_status_len);
   status_notify_due = false;
-  restart_status_notify_timer(moving);
+  restart_status_notify_timer(interval_ms);
 }
 
 bool ble_bed_service_status_subscribed(void)
@@ -1218,11 +1220,22 @@ void ble_bed_service_tick(void)
   bed_status_get(&status);
 
   uint8_t packed[gattdb_bed_status_len];
-  ble_bed_service_encode_status(&status, false, packed); // tilt_fresh: Stage B5
+  ble_bed_service_encode_status(&status, status.tilt_fresh, packed); // tilt_fresh: Prompt AI C4
 
-  if (status_notify_due || status_flags_changed(packed, last_sent_status)) {
-    bool moving = (status.command == BED_COMMAND_MOVE) || (status.command == BED_COMMAND_AUTO_LEVEL);
-    publish_status(packed, moving);
+  // Cadence (BLE_GATT_DESIGN.md #6): 10 Hz moving; 5 Hz idle while the tilt
+  // is live - the idle sampler, or a burst outside settings mode (Prompt AI
+  // C3); 1 Hz otherwise. A change of cadence publishes at once, so the new
+  // rate starts now rather than after a 1 s timer still running from before
+  // (e.g. after an app MOVE_STOP, whose settle burst starts a pass later).
+  bool moving = (status.command == BED_COMMAND_MOVE) || (status.command == BED_COMMAND_AUTO_LEVEL);
+  bool idle_live = tilt_idle_active()
+                   || (tilt_telemetry_burst_active() && !app_in_settings_mode());
+  uint32_t interval_ms = moving ? STATUS_NOTIFY_MOVING_MS
+                       : (idle_live ? STATUS_NOTIFY_IDLE_LIVE_MS : STATUS_NOTIFY_IDLE_MS);
+
+  if (status_notify_due || status_flags_changed(packed, last_sent_status)
+      || (interval_ms != status_notify_interval_ms)) {
+    publish_status(packed, interval_ms);
   }
 }
 

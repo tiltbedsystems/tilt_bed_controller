@@ -91,5 +91,33 @@ bool tilt_telemetry_value_valid(void);
 int16_t tilt_telemetry_roll_scaled(void);
 int16_t tilt_telemetry_pitch_scaled(void);
 
+// True if the per-pass telemetry chain updated in the current main-loop pass
+// (a motor energised or a burst running). For tilt_fresh (Prompt AI C4).
+bool tilt_telemetry_perpass_ran(void);
+
+// True if auto-level's chain (accel_running_average()) updated in the current
+// pass - during auto-level and the settings zero-level capture. For tilt_fresh.
+bool accel_auto_level_chain_ran(void);
+
+/***************************************************************************//**
+ * Idle tilt sampler (Prompt AI part C, DECISIONS #50). Runs inside
+ * tilt_telemetry_tick() while a phone is subscribed and the bed is idle (no
+ * motor, no burst, not auto-level, not settings mode): 10 Hz, one accel read
+ * per sleeptimer flag, its own millisecond-defined filter.
+ ******************************************************************************/
+
+// True while the idle window is open and its filter holds a value.
+// bed_status.c ships the idle value then.
+bool tilt_idle_active(void);
+
+// Latest idle value, SCALED, deviation from the user's baseline, INTERNAL sign
+// convention (bed_status.c applies the wire convention, as for the others).
+int16_t tilt_idle_roll_scaled(void);
+int16_t tilt_idle_pitch_scaled(void);
+
+// True while tilt_idle_active() and the last idle filter update is younger
+// than TILT_IDLE_FRESH_MS (300 ms).
+bool tilt_idle_fresh(void);
+
 
 #endif /* AUTO_LEVEL_H_ */

@@ -57,6 +57,22 @@
 // ever runs while a phone is subscribed.
 #define TILT_TELEMETRY_BURST_MS 500
 
+// Live idle tilt (Prompt AI part C, DECISIONS #50). While a phone is
+// subscribed and the bed is idle, the accelerometer is sampled at 10 Hz and
+// filtered by a time-constant (millisecond) filter of its own - see the idle
+// sampler block below. All in milliseconds via sleeptimer (DECISIONS #2).
+#define TILT_IDLE_SAMPLE_MS 100        // 10 Hz sample period
+#define TILT_IDLE_TAU_MS 500           // filter time constant; bench-tunable from TILT_IDLE_DIAG's lines
+#define TILT_IDLE_CONVERGED_MS (3 * TILT_IDLE_TAU_MS) // ~95 % settled after the window opens
+#define TILT_IDLE_FRESH_MS 300         // tilt_fresh: an idle value younger than this is fresh (3 periods)
+
+// Bench diagnostics for the idle sampler: every TILT_IDLE_DIAG_PERIOD_MS while
+// it runs (after TILT_IDLE_CONVERGED_MS), one line with the sample count and
+// the min/max/peak-to-peak of the filtered roll and pitch. Measures the noise
+// at rest for the LEVELED exit band. Never per sample. Pre-ship: 0 (PRE_SHIP.md).
+#define TILT_IDLE_DIAG 1
+#define TILT_IDLE_DIAG_PERIOD_MS 10000
+
 #define NUM_ACCEL_READINGS 130 // Number of accelerometer samples to average
 #define TOLERANCE 0.01 // Tolerance auto-level code reaches before determining bed is level
 #define CLOSE_TOLERANCE 0.1 // Auto-level won't begin leveling if within this tolerance
@@ -123,6 +139,11 @@ typedef struct {
 // below so every existing reader (check_level, returnAccelValue,
 // bed_status.c) is untouched by the refactor.
 static accel_filter_state_t auto_level_filter = {0};
+
+// Set by accel_running_average() whenever auto-level's chain updates;
+// latched once per pass by tilt_telemetry_tick() for tilt_fresh (Prompt AI C4).
+static bool auto_level_chain_updated = false;
+static bool auto_level_chain_ran = false;
 
 static int16_t accel_average_roll_angle = 0; // Average value of roll SCALED VALUE
 static int16_t accel_average_pitch_angle = 0; // Average value of pitch SCALED VALUE
@@ -339,6 +360,7 @@ void accel_running_average(){
 
       // Filter into AUTO-LEVEL's own state. Never telemetry's.
       accel_filter_update(&auto_level_filter);
+      auto_level_chain_updated = true;
 
       // Mirror the outputs into the globals every existing reader already
       // uses (check_level(), returnAccelValue(), print_accel_value(),
@@ -391,6 +413,7 @@ static sl_sleeptimer_timer_handle_t tilt_burst_timer;
 static volatile bool tilt_burst_running = false;
 static bool tilt_telemetry_valid = false; // has this sampler ever produced a value?
 static bool tilt_prev_motors_on = false;  // for the T3 edge
+static bool tilt_perpass_ran = false;     // the per-pass chain updated in this pass (tilt_fresh)
 
 static void tilt_burst_timer_callback(sl_sleeptimer_timer_handle_t *handle, void *data)
 {
@@ -440,6 +463,207 @@ static bool any_motor_energised(void)
   return false;
 }
 
+bool tilt_telemetry_perpass_ran(void)
+{
+  return tilt_perpass_ran;
+}
+
+bool accel_auto_level_chain_ran(void)
+{
+  return auto_level_chain_ran;
+}
+
+/*******************************************************************************
+ *** Idle tilt sampler (Prompt AI part C, DECISIONS #50)
+ *
+ * The per-pass window above covers a move and the 500 ms bursts. The rest of
+ * the time a subscribed phone used to see the last value of the last window.
+ * The IDLE window is the rest of the time: a phone subscribed, no motor
+ * energised, no burst running, not auto-level, not settings mode. In it:
+ *
+ *   - a periodic sleeptimer (TILT_IDLE_SAMPLE_MS) whose callback ONLY sets
+ *     tilt_idle_sample_due (ISR context - no I2C, DECISIONS #27 rule 1);
+ *   - tilt_telemetry_tick(), in the main loop, does one read_accel() per flag
+ *     (read_accel() itself keeps ACCEL_I2C_MIN_INTERVAL_MS) - ~1 % bus
+ *     occupancy at 10 Hz against the ~13 % #30 proved safe;
+ *   - a first-order low-pass filter defined by its time constant
+ *     TILT_IDLE_TAU_MS, alpha = 1 - exp(-dt / tau) from the MEASURED time
+ *     between samples, so it behaves the same whatever the loop rate (#2,
+ *     #29) - unlike the pass-counted chains, which are unchanged;
+ *   - its own state, never auto-level's buffer (#31) nor telemetry's.
+ *
+ * It filters the same baseline-relative, INTERNAL-sign value as the other
+ * chains (sample minus the stored baseline), so bed_status.c's single pitch
+ * negation still applies once.
+ *
+ * Seeding, so the shown angle does not jump: if the per-pass chain ran in
+ * the pass just before the window opened (the end of a move's settle burst,
+ * or of any burst), the filter starts from that chain's value; otherwise
+ * (after auto-level, settings mode, or a fresh subscription that found the
+ * per-pass chain idle) from the first idle sample, taken in the opening pass.
+ *
+ * No sleep veto (C5): the CPU may sleep between samples; the timer interrupt
+ * brings the main loop round for each one.
+ ******************************************************************************/
+
+static sl_sleeptimer_timer_handle_t tilt_idle_timer;
+static volatile bool tilt_idle_sample_due = false; // set in timer ISR context
+static bool     tilt_idle_open = false;        // the idle window is open
+static bool     tilt_idle_have_value = false;  // the filter holds a value
+static float    tilt_idle_roll = 0.0f;         // filter state, SCALED, baseline-relative, internal sign
+static float    tilt_idle_pitch = 0.0f;
+static int16_t  tilt_idle_roll_out = 0;
+static int16_t  tilt_idle_pitch_out = 0;
+static uint32_t tilt_idle_open_tick = 0;
+static uint32_t tilt_idle_last_sample_tick = 0;
+
+#if TILT_IDLE_DIAG && !BED_CAPTURE_MOTOR_CURRENTS
+static bool     tilt_diag_running = false;
+static uint32_t tilt_diag_start_tick = 0;
+static uint16_t tilt_diag_count = 0;
+static int16_t  tilt_diag_roll_min, tilt_diag_roll_max;
+static int16_t  tilt_diag_pitch_min, tilt_diag_pitch_max;
+#endif
+
+static void tilt_idle_timer_callback(sl_sleeptimer_timer_handle_t *handle, void *data)
+{
+  (void)handle;
+  (void)data;
+  tilt_idle_sample_due = true; // ISR context - flag only, the tick does the read
+}
+
+static int16_t round_to_int16(float x)
+{
+  return (int16_t)((x >= 0.0f) ? (x + 0.5f) : (x - 0.5f));
+}
+
+static void tilt_idle_open_window(bool seed_from_perpass)
+{
+  uint32_t now = sl_sleeptimer_get_tick_count();
+  tilt_idle_open = true;
+  tilt_idle_open_tick = now;
+  if (seed_from_perpass) {
+    tilt_idle_roll  = (float)telemetry_filter.baseline_roll;
+    tilt_idle_pitch = (float)telemetry_filter.baseline_pitch;
+    tilt_idle_roll_out  = telemetry_filter.baseline_roll;
+    tilt_idle_pitch_out = telemetry_filter.baseline_pitch;
+    tilt_idle_have_value = true;
+    tilt_idle_last_sample_tick = now;
+    tilt_idle_sample_due = false;
+  } else {
+    tilt_idle_have_value = false;
+    tilt_idle_sample_due = true; // the first sample is taken in this pass
+  }
+#if TILT_IDLE_DIAG && !BED_CAPTURE_MOTOR_CURRENTS
+  tilt_diag_running = false;
+#endif
+  sl_sleeptimer_restart_periodic_timer(&tilt_idle_timer,
+                                       sl_sleeptimer_ms_to_tick(TILT_IDLE_SAMPLE_MS),
+                                       tilt_idle_timer_callback, NULL, 0, 0);
+}
+
+static void tilt_idle_close(void)
+{
+  if (!tilt_idle_open) {
+    return;
+  }
+  sl_sleeptimer_stop_timer(&tilt_idle_timer);
+  tilt_idle_open = false;
+  tilt_idle_have_value = false;
+  tilt_idle_sample_due = false;
+#if TILT_IDLE_DIAG && !BED_CAPTURE_MOTOR_CURRENTS
+  tilt_diag_running = false; // a partial period is discarded
+#endif
+}
+
+#if TILT_IDLE_DIAG && !BED_CAPTURE_MOTOR_CURRENTS
+// One sample of the filtered output into the 10 s statistics; prints and
+// starts a new period once TILT_IDLE_DIAG_PERIOD_MS has passed.
+static void tilt_idle_diag_sample(uint32_t now)
+{
+  if (!tilt_diag_running) {
+    tilt_diag_running = true;
+    tilt_diag_start_tick = now;
+    tilt_diag_count = 0;
+    tilt_diag_roll_min = tilt_diag_roll_max = tilt_idle_roll_out;
+    tilt_diag_pitch_min = tilt_diag_pitch_max = tilt_idle_pitch_out;
+  }
+  if (tilt_diag_count < 0xFFFF) {
+    tilt_diag_count++;
+  }
+  if (tilt_idle_roll_out < tilt_diag_roll_min)   tilt_diag_roll_min = tilt_idle_roll_out;
+  if (tilt_idle_roll_out > tilt_diag_roll_max)   tilt_diag_roll_max = tilt_idle_roll_out;
+  if (tilt_idle_pitch_out < tilt_diag_pitch_min) tilt_diag_pitch_min = tilt_idle_pitch_out;
+  if (tilt_idle_pitch_out > tilt_diag_pitch_max) tilt_diag_pitch_max = tilt_idle_pitch_out;
+
+  uint32_t elapsed_ms = sl_sleeptimer_tick_to_ms(now - tilt_diag_start_tick);
+  if (elapsed_ms >= TILT_IDLE_DIAG_PERIOD_MS) {
+    // Pitch in the INTERNAL sign (head raised = negative), as every pitch
+    // printed from this file; peak-to-peak is the same either way.
+    printf("TILT idle: %u samples in %lu ms, roll min %d max %d p2p %d, pitch min %d max %d p2p %d (deg x100, pitch internal sign)\r\n",
+           (unsigned)tilt_diag_count, (unsigned long)elapsed_ms,
+           tilt_diag_roll_min, tilt_diag_roll_max, tilt_diag_roll_max - tilt_diag_roll_min,
+           tilt_diag_pitch_min, tilt_diag_pitch_max, tilt_diag_pitch_max - tilt_diag_pitch_min);
+    tilt_diag_running = false; // the next sample starts the next period
+  }
+}
+#endif
+
+// One idle sample: one read_accel(), one filter step with alpha from the
+// measured time since the previous sample.
+static void tilt_idle_sample(void)
+{
+  uint32_t now = sl_sleeptimer_get_tick_count();
+  read_accel();
+  float roll  = (float)(latest_roll_angle_scaled  - baseline_roll_angle);
+  float pitch = (float)(latest_pitch_angle_scaled - baseline_pitch_angle);
+
+  if (!tilt_idle_have_value) {
+    tilt_idle_roll  = roll;
+    tilt_idle_pitch = pitch;
+    tilt_idle_have_value = true;
+  } else {
+    float dt_ms = (float)(now - tilt_idle_last_sample_tick) * 1000.0f
+                  / (float)sl_sleeptimer_get_timer_frequency();
+    float alpha = 1.0f - expf(-dt_ms / (float)TILT_IDLE_TAU_MS);
+    tilt_idle_roll  += alpha * (roll  - tilt_idle_roll);
+    tilt_idle_pitch += alpha * (pitch - tilt_idle_pitch);
+  }
+  tilt_idle_last_sample_tick = now;
+  tilt_idle_roll_out  = round_to_int16(tilt_idle_roll);
+  tilt_idle_pitch_out = round_to_int16(tilt_idle_pitch);
+
+  // Statistics only on a converged value: TILT_IDLE_CONVERGED_MS after the
+  // window opened.
+  if (sl_sleeptimer_tick_to_ms(now - tilt_idle_open_tick) >= TILT_IDLE_CONVERGED_MS) {
+#if TILT_IDLE_DIAG && !BED_CAPTURE_MOTOR_CURRENTS
+    tilt_idle_diag_sample(now);
+#endif
+  }
+}
+
+bool tilt_idle_active(void)
+{
+  return tilt_idle_open && tilt_idle_have_value;
+}
+
+int16_t tilt_idle_roll_scaled(void)
+{
+  return tilt_idle_roll_out;
+}
+
+int16_t tilt_idle_pitch_scaled(void)
+{
+  return tilt_idle_pitch_out;
+}
+
+bool tilt_idle_fresh(void)
+{
+  return tilt_idle_active()
+         && (sl_sleeptimer_tick_to_ms(sl_sleeptimer_get_tick_count() - tilt_idle_last_sample_tick)
+             < TILT_IDLE_FRESH_MS);
+}
+
 // status_subscribed and other_sampler_active are passed in rather than read
 // here so this file keeps no dependency on the BLE layer or on app.c's mode
 // flags, and so both gates are visible at the call site in
@@ -454,11 +678,22 @@ void tilt_telemetry_tick(bool status_subscribed, bool other_sampler_active)
   bool motors_just_stopped = (tilt_prev_motors_on && !motors_on);
   tilt_prev_motors_on = motors_on;
 
+  // Which chains updated in this pass, for tilt_fresh (Prompt AI C4).
+  // accel_running_average() is called before this in every pass that calls it
+  // (app.c's auto-level block, then settings_mode_tick()), so this latches
+  // "auto-level's chain ran this pass". tilt_perpass_ran is set below.
+  auto_level_chain_ran = auto_level_chain_updated;
+  auto_level_chain_updated = false;
+  bool perpass_ran_last_pass = tilt_perpass_ran;
+  tilt_perpass_ran = false;
+
   // Gate 2a. No subscriber, no sampler, and no burst either - a switch-only
   // bed with no phone connected must stay bit-for-bit what it was, including
   // never vetoing sleep. This is what keeps the existing regression baseline
-  // valid for that case, so the T3 arm below sits AFTER this return.
+  // valid for that case, so the T3 arm below sits AFTER this return. The idle
+  // sampler stops too: no timer, no wakes.
   if (!status_subscribed) {
+    tilt_idle_close();
     return;
   }
 
@@ -470,18 +705,32 @@ void tilt_telemetry_tick(bool status_subscribed, bool other_sampler_active)
   // accel_running_average() every pass; running this as well would put two
   // samplers on the bus per pass and halve the effective averaging window in
   // time. Auto-level's value is what bed_status.c ships in that state anyway.
+  // The idle sampler stands down for the same reason.
   if (other_sampler_active) {
+    tilt_idle_close();
     return;
   }
 
-  // Gate 2b: is the sampling window open?
-  if (!motors_on && !tilt_burst_running) {
+  // Gate 2b: the per-pass window - a motor energised or a burst running.
+  // Unchanged chain; the idle sampler stands down while it runs.
+  if (motors_on || tilt_burst_running) {
+    tilt_idle_close();
+    read_accel();
+    accel_filter_update(&telemetry_filter);
+    tilt_telemetry_valid = true;
+    tilt_perpass_ran = true;
     return;
   }
 
-  read_accel();
-  accel_filter_update(&telemetry_filter);
-  tilt_telemetry_valid = true;
+  // Otherwise idle (Prompt AI C1): subscribed, no motor, no burst, neither
+  // auto-level nor settings mode. One read per timer flag.
+  if (!tilt_idle_open) {
+    tilt_idle_open_window(perpass_ran_last_pass);
+  }
+  if (tilt_idle_sample_due) {
+    tilt_idle_sample_due = false;
+    tilt_idle_sample();
+  }
 }
 
 int16_t returnAccelValue(axis_t axis) {

@@ -614,6 +614,10 @@ bool app_is_ok_to_sleep(void)
     return false;
   }
 
+  // The idle tilt sampler (Prompt AI C5, DECISIONS #50) deliberately has NO
+  // veto here: it samples on a 100 ms sleeptimer whose interrupt brings the
+  // main loop round, so the CPU may sleep between samples.
+
   return true;
 }
 #endif // SL_CATALOG_POWER_MANAGER_PRESENT

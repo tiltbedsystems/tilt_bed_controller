@@ -43,10 +43,9 @@ void ble_bed_service_debug_pass_end(void);
 
 // Packs a bed_status_t snapshot into the 20-byte Bed Status characteristic
 // wire format (BLE_GATT_DESIGN.md #6), little-endian, matching gattdb_
-// bed_status_len exactly. tilt_fresh is passed in separately rather than
-// read from bed_status_t - the continuous accel sampling that makes it
-// meaningful is a later, separately-flagged change (DECISIONS.md #17/#24);
-// until then callers pass false.
+// bed_status_len exactly. tilt_fresh is passed in separately; since Prompt AI
+// (idle sampling, DECISIONS.md #50) the caller passes bed_status_t.tilt_fresh,
+// which bed_status_get() sets with its choice of tilt chain.
 void ble_bed_service_encode_status(const bed_status_t *in, bool tilt_fresh, uint8_t *out);
 
 // Forwards every sl_bt stack event the Tilt Bed Service cares about: boot,

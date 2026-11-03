@@ -2874,3 +2874,137 @@ change.
 **Status:** builds clean (no warnings) with `BLE_DEBUG_WATCHDOG_LOG` 1 and 0;
 host test unchanged. **Not run on the bench.** REGRESSION §5b updated.
 What each AH A6 case does now is in the Prompt AI handoff.
+
+## 50. Live idle tilt: a 10 Hz idle sampler with its own millisecond filter, 5 Hz idle notify, `tilt_fresh` live
+
+Date: 2026-11-03. Reviewer's Prompt AI part C (Option B of the Prompt AH
+handoff b.C2, "as recommended"). Implements the idle sampling #33 deferred and
+PRE_SHIP F16 (`tilt_fresh`).
+
+### The problem
+
+With a phone open and the bed still, the accelerometer was read only during a
+500 ms burst - after the app subscribed (T1), after a REFRESH_TILT (T2), after
+a move (T3). The rest of the time Bed Status carried the last value of the
+last burst, notified once a second, and `tilt_fresh` was always 0. The user
+wants the level display live while the app is open, and part D's
+self-clearing LEVELED needs a live value to clear on.
+
+### Decision
+
+**The idle window** is: at least one connection subscribed to Bed Status, no
+motor energised, **no burst running**, auto-level not running, settings mode
+not active. In it (`auto_level.c`, the idle sampler block, `:476-665` at the part C commit):
+
+- **Sampling, 10 Hz.** A periodic sleeptimer (`TILT_IDLE_SAMPLE_MS` 100,
+  started when the window opens, stopped when it closes) whose callback only
+  sets `tilt_idle_sample_due` - ISR context, no I2C (#27 rule 1).
+  `tilt_telemetry_tick()`, main loop, does **one `read_accel()` per flag**;
+  `read_accel()` keeps its own `ACCEL_I2C_MIN_INTERVAL_MS` gate (#30).
+- **Filter.** A first-order low-pass on its own state, `y += alpha * (x - y)`
+  with `alpha = 1 - exp(-dt / TILT_IDLE_TAU_MS)`, `dt` the **measured** time
+  between samples (sleeptimer ticks), `TILT_IDLE_TAU_MS` = 500. `x` is the
+  sample minus the stored baseline, in the internal sign convention - exactly
+  what the other chains produce - so `bed_status.c`'s single pitch negation
+  still applies once. Output rounded to `int16_t`.
+- **Seed.** If the per-pass telemetry chain ran in the pass just before the
+  window opened (the end of a move's T3 burst, or of any burst), the filter
+  starts from that chain's value, so the shown angle does not jump at the end
+  of a move or burst. Otherwise (after auto-level, after settings mode, or a
+  window that opens with the per-pass chain idle) it starts from the first
+  idle sample, taken in the opening pass.
+- **On the wire.** `bed_status_get()` ships the idle value while the window is
+  open (after auto-level/settings and before the per-pass chain in its
+  order). Notify cadence: **5 Hz** (`STATUS_NOTIFY_IDLE_LIVE_MS` 200) when not
+  moving and the tilt is live - the idle window open, or a burst running
+  outside settings mode; 10 Hz moving, unchanged; 1 Hz otherwise. A change of
+  cadence publishes at once (without that, the first 5 Hz notify after an
+  app move waited up to 1 s on the timer started at the move's end).
+- **`tilt_fresh` (bit 3).** 1 while the shipped chain is live: auto-level's
+  chain or the per-pass telemetry chain updated in this pass, or the idle
+  value is younger than `TILT_IDLE_FRESH_MS` (300 ms, three sample periods).
+  0 for the auto-level last-known fallback (no phone has ever caused a
+  sample), in settings mode outside the zero-level capture, in the pass that
+  starts an auto-level run (auto-level's chain has not run yet in that pass),
+  and whenever the idle value is 300 ms or more old (the main loop or the
+  read stalled).
+- **Sleep.** No new EM0 veto: the CPU may sleep between samples. Each 100 ms
+  timer interrupt brings the main loop round (`sl_power_manager_sleep_on_
+  isr_exit()` returns "do not sleep" for a wake that was not the power
+  manager's own unless the Bluetooth or iostream hook asks to sleep -
+  `autogen/sl_power_manager_handler.c:77-114`), one pass runs, the CPU sleeps
+  again.
+- **Bench diagnostics** behind `TILT_IDLE_DIAG` (1, PRE_SHIP): every 10 s while
+  the sampler runs, starting once the filter has run `3 x TILT_IDLE_TAU_MS`
+  since the window opened, one line: `TILT idle: N samples in T ms, roll min
+  .. max .. p2p .., pitch min .. max .. p2p .. (deg x100, pitch internal
+  sign)`.
+
+### Why a time-based filter, and what this reverses of #33
+
+#33 gave the telemetry chain **the same filter as auto-level** (130-slot
+running average plus LPF alpha 0.1, per pass) so the two could not drift
+apart. That filter counts passes. At 10 Hz its 130 slots would span 13 s and
+its LPF about 1 s - the sluggish display #32 warned about - and the idle loop
+rate is not a constant anyway (#29). So the idle chain gets a filter defined
+by its **time constant in milliseconds** (#2, #32's constraint), independent
+of the sample rate. **This partly reverses #33's "same filter in both
+chains", for the idle case only.** The moving chain (per-pass telemetry during
+a move or burst) and auto-level's chain are unchanged and stay pass-based
+(#29, PRE_SHIP F15). #31 is untouched: the idle sampler writes only its own
+state.
+
+### Stand-down rules
+
+The idle sampler stops (timer stopped, state dropped, a partial diagnostics
+period discarded) whenever any of these holds, checked every pass in
+`tilt_telemetry_tick()`:
+
+- no connection subscribed (gate 2a) - a switch-only bed with no phone is
+  bit-for-bit unchanged: no timer, no wakes;
+- auto-level or settings mode (gate 2c) - their own chain samples every pass;
+- a motor energised or a burst running (gate 2b) - the per-pass chain samples
+  every pass and is shipped.
+
+So at most one of the three chains reads the accelerometer in any pass.
+
+### Risks (Prompt AH handoff b.C2) and how the bench checks them
+
+1. **A periodic wake next to the radio's schedule while idle** has never been
+   on the bench (#33 deferred idle sampling for this reason). Bus load is
+   small - one write-read (1 byte out, 6 in) per 100 ms, ~0.85 ms wire time,
+   at most ~1.4 ms measured (#30): **~0.9-1.4 % occupancy**, against the
+   ~13 % #30 proved safe during auto-level. The 200 ms motor-fault poll
+   (`exp_board.c:27`) also runs on these passes, at most 5 reads a second.
+   Bench: REGRESSION §6b - the link stays up with the app open at rest for
+   minutes, `BLE_DEBUG_WATCHDOG_LOG` 1; the holds of §5 and §6 still show no
+   watchdog stop.
+2. **The read blocks the main loop** up to ~1.4 ms in an idle pass. No motor
+   runs then (gate 2b); the switch sampler's 10 ms cadence absorbs it.
+3. **Two filter algorithms** meet at the window edges. Per-pass -> idle:
+   seeded, no step. Idle -> per-pass (a move or burst starts): the per-pass
+   chain resumes from its own buffer, last filled at the end of its previous
+   window; if the bed was tilted while idle, the shown value steps back to
+   that old value and catches up over its ~130-pass window (~0.2-0.3 s at the
+   #29 loop rates). After an auto-level run that ended without motion the idle
+   seed is one raw sample (a step the size of one sample's noise). Bench:
+   REGRESSION §6b, "after a move" and "after auto-level".
+4. **The moving and auto-level chains stay pass-based** - F15 is still open.
+5. **A phone that stays subscribed in the background** keeps the 10 Hz
+   sampler and the 5 Hz notify running. The app will unsubscribe when
+   backgrounded (app prompt); nothing in the firmware now. PRE_SHIP row F30.
+6. **The new filter needs its own acceptance**: noise at rest (the 10 s
+   `TILT idle` lines, which also size part D's exit band) and lag when the
+   bed is tilted by hand (part D's check). Expected lag from tau alone: a 1°
+   step crosses 0.3° after ~0.18 s and reaches 95 % after 1.5 s.
+
+Sleep (PRE_SHIP F11): ten short wakes a second plus the 5 Hz notify, ~1.5-2
+ms each in EM0 (the read, `read_accel()`'s double-precision `atan2`/`sqrt`,
+`expf`), so an extra **~2-3 %** EM0 duty while a phone is subscribed and the
+bed is idle - an estimate, not measured. F11 now asks for the idle current
+with and without a phone subscribed.
+
+### Status
+
+Builds clean (no warnings) with `TILT_IDLE_DIAG` 1 and 0; text +1,968 B
+(`expf` is 120 B of it). **Not run on the bench.** REGRESSION §6b.

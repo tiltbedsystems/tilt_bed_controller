@@ -100,29 +100,44 @@ void bed_status_get(bed_status_t *out)
   //       telemetry sampler stands down (its gate 2c), so auto-level's chain
   //       is the only one being fed. It is also the value auto-level is
   //       actually steering on, which is what the user wants to watch.
+  //   otherwise, while the idle sampler holds a value -> the IDLE value
+  //       (Prompt AI part C). Live at rest with a phone subscribed.
   //   otherwise, once telemetry has produced anything -> TELEMETRY's value.
-  //       Live during a manual move and during a post-move settle burst.
+  //       Live during a manual move and during a settle burst.
   //   otherwise -> auto-level's last-known value.
   //       Only before the telemetry sampler has ever run: no phone had
   //       subscribed yet, or nothing has triggered a burst since boot. Same
-  //       stale-last-known behaviour as before this change, which is why
-  //       tilt_fresh stays hardcoded 0 (DECISIONS.md #17/#33).
+  //       stale-last-known behaviour as before (DECISIONS.md #17/#33).
   //
-  // Both chains produce auto_level.c's INTERNAL sign convention, so the wire
-  // negation below applies to whichever was chosen.
+  // tilt_fresh (Bed Status flag bit 3, Prompt AI C4) goes with the choice:
+  // 1 only while the chosen chain is live - auto-level's or the per-pass
+  // telemetry chain updated in this pass, or the idle value is younger than
+  // 300 ms; 0 for the last-known fallback and for a chain that has stopped.
+  //
+  // All three chains produce auto_level.c's INTERNAL sign convention, so the
+  // wire negation below applies to whichever was chosen.
   int16_t roll_scaled;
   int16_t pitch_scaled;
+  bool tilt_fresh;
 
   if (auto_level_active || in_settings_mode) {
     roll_scaled  = baseline_accel_average_roll_angle;
     pitch_scaled = baseline_accel_average_pitch_angle;
+    tilt_fresh   = accel_auto_level_chain_ran();
+  } else if (tilt_idle_active()) {
+    roll_scaled  = tilt_idle_roll_scaled();
+    pitch_scaled = tilt_idle_pitch_scaled();
+    tilt_fresh   = tilt_idle_fresh();
   } else if (tilt_telemetry_value_valid()) {
     roll_scaled  = tilt_telemetry_roll_scaled();
     pitch_scaled = tilt_telemetry_pitch_scaled();
+    tilt_fresh   = tilt_telemetry_perpass_ran();
   } else {
     roll_scaled  = baseline_accel_average_roll_angle;
     pitch_scaled = baseline_accel_average_pitch_angle;
+    tilt_fresh   = false;
   }
+  out->tilt_fresh = tilt_fresh;
 
   out->roll_angle_scaled = roll_scaled;
 

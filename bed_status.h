@@ -42,10 +42,9 @@ typedef struct {
   // corner pair; see dual_motor_control.c).
   bed_motor_status_t motors[NUM_MOTORS];
 
-  // Current tilt, deviation from the user's level baseline (scaled). Only
-  // continuously fresh while auto-level or the settings zero-level capture
-  // is running - stale (last-known, possibly 0) otherwise. See
-  // DECISIONS.md #17.
+  // Current tilt, deviation from the user's level baseline (scaled), from
+  // whichever filter chain bed_status_get() picks. tilt_fresh says whether it
+  // is live (Prompt AI C4); see bed_status_get().
   //
   // SIGN CONVENTION - these are wire-facing values, and pitch does NOT match
   // auto_level.c's internal sign. bed_status_get() negates pitch exactly once
@@ -56,6 +55,7 @@ typedef struct {
   //   pitch_angle_scaled POSITIVE = HEAD raised
   int16_t roll_angle_scaled;
   int16_t pitch_angle_scaled;
+  bool tilt_fresh;           // Bed Status flag bit 3: the angles above are live (Prompt AI C4)
 
   bool any_collision;
   bool in_settings_mode;

@@ -386,22 +386,37 @@ place, no version bump**, on the same grounds as bit 4: additive, the bit was
 reserved and always 0, the byte layout is unchanged, a client that ignores it
 behaves exactly as before.
 
-**`tilt_fresh` requires a one-bit firmware addition** implementing
-DECISIONS #17's app-era plan: continuous accelerometer sampling runs at a
-variable cadence *only while at least one connection has Status
-notifications enabled* — occasional (~1 Hz) when idle, fast while moving or
-auto-leveling. `tilt_fresh = 0` whenever the last sample is older than the
-staleness threshold; the app greys out the tilt display rather than showing
-a stale angle as live.
+**`tilt_fresh` (bit 3) and live tilt - implemented 2026-11-03 (Prompt AI
+part C, DECISIONS #50).** This was DECISIONS #17's app-era plan; it was
+specified here but `tilt_fresh` was always 0 until then. Accelerometer
+sampling runs *only while at least one connection has Status notifications
+enabled*:
+
+| State (subscribed) | Tilt on offsets 4-7 | Sampled | `tilt_fresh` |
+|---|---|---|---|
+| Auto-level, or settings mode | auto-level's chain | every main-loop pass while it runs (settings: only during the zero-level capture) | 1 in a pass where that chain ran; 0 otherwise (settings outside the capture; the pass that starts a run) |
+| A motor energised, or a 500 ms burst (after subscribing, REFRESH_TILT, or the end of a move) | the per-pass telemetry chain (#33) | every pass | 1 |
+| Idle - no motor, no burst, not auto-level, not settings | the idle chain: 10 Hz, its own 500 ms time-constant filter | every 100 ms | 1 while the last idle value is younger than 300 ms; 0 if sampling stalls |
+| No sample since boot | auto-level's last-known value | - | 0 |
+
+The app greys out the tilt display when `tilt_fresh` is 0 rather than showing
+a stale angle as live. Bit 3 is in byte 0, so a change is notified at once.
+Values are deviations from the stored level baseline in every state, and the
+sign conventions below apply to all of them.
 
 Notify cadence (adaptive, subscription-driven):
 
 | Bed state | Cadence |
 |---|---|
 | No subscribers | none (and no extra accel sampling) |
-| Idle, subscribed | 1 Hz, plus immediate on any state-flag change |
+| Idle, subscribed, tilt live (idle sampler, or a burst outside settings mode) | 5 Hz (Prompt AI), plus immediate on any state-flag change |
+| Idle, subscribed, otherwise (settings mode) | 1 Hz, plus immediate on any state-flag change |
 | Moving / auto-leveling | 10 Hz |
 | Collision / fault edge | immediate |
+
+A change between these cadences publishes at once, so a new rate starts
+immediately. Additive within v1: no byte moves, and a client that ignores
+`tilt_fresh` sees the same angles more often.
 
 ## 7. Command Result characteristic (0002)
 
