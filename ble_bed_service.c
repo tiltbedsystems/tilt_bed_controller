@@ -341,9 +341,12 @@ static bool app_auto_level_active = false;
 //     during an app hold, or a start was refused because a collision sequence
 //     is running. Answered COLLISION_STOP. Without it the held button's next
 //     repeat re-energised the same pair, into the obstruction.
-//   STOP (DECISIONS #49): a STOP_ALL from either connection. Answered
-//     STOP_LATCHED. Without it the held button's next repeat restarted the
-//     bed right after the STOP.
+//   STOP (DECISIONS #49, amended by Prompt AI): a STOP_ALL from either
+//     connection while the app was commanding. Answered STOP_LATCHED. Without
+//     it the held button's next repeat restarted the bed right after the STOP.
+// A STOP latch is upgraded to COLLISION when a start is refused during a
+// collision sequence (collision wins, Prompt AI); COLLISION is never
+// downgraded to STOP.
 // Set ONLY through latch_app_starts(), which also starts the silence timeout,
 // so the latch can never be left set with nothing to clear it.
 typedef enum {
@@ -585,7 +588,9 @@ static void note_app_commanding(void)
 // the only place app_commanding is cleared, and it clears the latch too,
 // app_commanding is true whenever the latch is set, so the latch always clears
 // by silence MOVE_WATCHDOG_MS after the app's last start, refusal or STOP_ALL
-// (Prompt AG b.3). A COLLISION latch is never downgraded to STOP.
+// (Prompt AG b.3). A COLLISION latch is never downgraded to STOP; a STOP latch
+// is upgraded to COLLISION by the start refusal when a collision is involved
+// (Prompt AI A1).
 static void latch_app_starts(app_start_latch_t reason)
 {
   if (app_start_latch != APP_LATCH_COLLISION) {
@@ -740,6 +745,12 @@ static void process_pending_command(void)
     uint8_t conn = stop_all_conn;
     stop_all_pending = false;
 
+    // Judged before anything below can change it (Prompt AI A3). app_commanding
+    // is true while an app button is held, or for MOVE_WATCHDOG_MS after the
+    // app's last start without a stop write; it is always true while a latch
+    // is set (latch_app_starts()), so the second term only states that.
+    bool latch_stop = app_commanding || (app_start_latch != APP_LATCH_NONE);
+
     move_watchdog_cancel();
     app_move_active = false;
     app_auto_level_active = false;
@@ -754,11 +765,20 @@ static void process_pending_command(void)
     // its start; that is not a new press. Refuse app starts until the app
     // releases (an explicit stop, a disconnect, or silence). From either
     // role, and it never clears the latch: a COLLISION latch stays COLLISION.
-    latch_app_starts(APP_LATCH_STOP);
+    // Only when the app is commanding (Prompt AI A3): with the app idle there
+    // is no held button to wait for, so the user's next press is a normal
+    // start. The stop above is the same either way.
+    if (latch_stop) {
+      latch_app_starts(APP_LATCH_STOP);
+    }
 #if BLE_DEBUG_WATCHDOG_LOG
     // After the stop and the result.
-    printf("BLE: STOP_ALL latch set (conn=%u)%s\r\n", conn,
-           (app_start_latch == APP_LATCH_COLLISION) ? ", kept as collision" : "");
+    if (latch_stop) {
+      printf("BLE: STOP_ALL latch set (conn=%u)%s\r\n", conn,
+             (app_start_latch == APP_LATCH_COLLISION) ? ", kept as collision" : "");
+    } else {
+      printf("BLE: STOP_ALL (no app hold, no latch)\r\n");
+    }
 #endif
   }
 
@@ -824,8 +844,13 @@ static void process_pending_command(void)
   // App start latch (#48, #49). Motion-starting opcodes only, and before the
   // #36 check so the app is told "collision" or "stopped", not "wall switch".
   //
-  // STOP (#49): a STOP_ALL since the app last released - answered
-  // STOP_LATCHED.
+  // Collision wins (Prompt AI A1): if the latch is COLLISION or a collision
+  // sequence is running, the answer is COLLISION_STOP and the latch becomes
+  // (or stays) COLLISION, upgrading a STOP latch. Only a STOP latch with no
+  // collision is answered STOP_LATCHED.
+  //
+  // STOP (#49): a STOP_ALL while the app was commanding, since the app last
+  // released - answered STOP_LATCHED.
   //
   // COLLISION (#48): a collision during this app hold, button not yet
   // released - and also while ANY collision sequence runs: a quick release
@@ -842,12 +867,12 @@ static void process_pending_command(void)
   // no watchdog arm.
   if ((opcode == CMD_OPCODE_MOVE_START || opcode == CMD_OPCODE_AUTO_LEVEL_START)
       && (app_start_latch != APP_LATCH_NONE || any_collision)) {
-    if (app_start_latch == APP_LATCH_STOP) {
-      latch_app_starts(APP_LATCH_STOP);
-      send_command_result(conn, seq, CMD_RESULT_STOP_LATCHED);
-    } else {
+    if (app_start_latch == APP_LATCH_COLLISION || any_collision) {
       latch_app_starts(APP_LATCH_COLLISION);
       send_command_result(conn, seq, CMD_RESULT_COLLISION_STOP);
+    } else {
+      latch_app_starts(APP_LATCH_STOP);
+      send_command_result(conn, seq, CMD_RESULT_STOP_LATCHED);
     }
 #if BLE_DEBUG_WATCHDOG_LOG
     if (wd_diag_latch_refused < 0xFFFF) {
@@ -1139,6 +1164,12 @@ bool ble_bed_service_app_hold_active(void)
 
 void ble_bed_service_tick(void)
 {
+  // The silence release, judged first (Prompt AI A2), so "MOVE_WATCHDOG_MS
+  // since the app's last start" is decided at the moment the next command is
+  // processed - not only if some earlier pass happened to run after the
+  // deadline. Also run after the commands below, as before.
+  service_app_commanding();
+
   // Control link dropped mid-command (BLE_GATT_DESIGN.md #5). Deferred out
   // of the disconnect callback; done here, first, before anything else.
   if (disconnect_stop_pending) {

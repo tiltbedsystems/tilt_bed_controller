@@ -99,7 +99,7 @@ offset 3  seq      u8   rolling per-connection sequence number
 | 0x03 | AUTO_LEVEL_START | — | — | `bed_auto_level_start(BED_SOURCE_APP)`. **Hold-to-run** (DECISIONS #36), matching the physical auto-level button: **repeated every 100 ms while held**, and it arms and refreshes the same 300 ms dead-man watchdog a MOVE_START does. A repeat must not re-enter the verb — that would reset the levelling state machine. Release sends AUTO_LEVEL_STOP, which stops immediately. |
 | 0x04 | AUTO_LEVEL_STOP | — | — | `bed_auto_level_stop(BED_SOURCE_APP)`. |
 | 0x05 | LIGHTS_SET | 0 off / 1 on | — | `bed_lights_set(BED_SOURCE_APP, …)`. Latched. |
-| 0x06 | STOP_ALL | — | — | Explicit full stop (maps to the `app_stop_all()` path: motors + auto-level + LEDs). The app's big red button. Always accepted from **any** role, control or viewer — this is the BLE embodiment of the stop-from-anyone rule (#12). Then latches app motion starts until the app releases (DECISIONS #49; §7, result 0x07). |
+| 0x06 | STOP_ALL | — | — | Explicit full stop (maps to the `app_stop_all()` path: motors + auto-level + LEDs). The app's big red button. Always accepted from **any** role, control or viewer — this is the BLE embodiment of the stop-from-anyone rule (#12). Then, if the app is commanding (a button held, or a start in the last 300 ms with no stop write), latches app motion starts until the app releases (DECISIONS #49 as amended by Prompt AI; §7, result 0x07). With the app idle it stops the bed and latches nothing. |
 | 0x07 | REFRESH_TILT | 0 | 0 | Opens a tilt sampling burst (DECISIONS #33, trigger T2) so the app can pull a fresh angle on demand. **Commands no motion, cancels no motion.** Accepted from **any** role and in settings mode — see the arbitration note. Both args must be 0; anything else is REJECTED_INVALID. |
 
 **Implementation status: all seven opcodes are implemented** (Stage C,
@@ -403,9 +403,14 @@ the finger; a new press is a new hold. The firmware does not rely on this:
 the repeats of any hold that met a collision are refused until it releases,
 including a new press made while the collision sequence is still running.
 
-**STOP_LATCHED (0x07), DECISIONS #49.** A STOP_ALL - from the control or a
-viewer connection - stops the bed (answered 0x00 to the sender, as always) and
-then sets the firmware's **stop latch**. While it is set, every MOVE_START and
+**STOP_LATCHED (0x07), DECISIONS #49 (amended by Prompt AI, 2026-11-03).** A
+STOP_ALL - from the control or a viewer connection - stops the bed (answered
+0x00 to the sender, as always). **If the app is commanding at that moment** -
+an app button held, or the app's last MOVE_START / AUTO_LEVEL_START less than
+300 ms ago with no MOVE_STOP / AUTO_LEVEL_STOP since - it then sets the
+firmware's **stop latch**. With the app idle, a STOP_ALL stops the bed exactly
+the same way but sets no latch, and the next press is a normal start. While
+the latch is set, every MOVE_START and
 AUTO_LEVEL_START from the control connection is answered 0x07, echoing that
 command's own seq, and starts nothing; it does not arm the watchdog. The user
 may still have a finger on a held app button, and the app keeps repeating its
@@ -415,19 +420,29 @@ in answer to a start; a STOP_ALL itself is answered 0x00.
 The stop latch clears exactly like the collision latch: MOVE_STOP,
 AUTO_LEVEL_STOP, the control connection dropping while the app holds the bed,
 or 300 ms with no MOVE_START / AUTO_LEVEL_START (accepted or refused) and no
-STOP_ALL from the app. A further STOP_ALL does not clear it. So:
+latching STOP_ALL. A further STOP_ALL does not clear it (while latched the app
+is commanding, so a further STOP_ALL re-latches and restarts the 300 ms). So:
 
 - a held app button after a STOP stays stopped until the finger is lifted,
   then a fresh press is a normal start;
-- a press made within 300 ms of a STOP tapped with nothing held is refused
-  (0x07) and must be released and pressed again; a press after that is a
-  normal start.
+- a STOP tapped with nothing held sets no latch, so a press right after it is
+  a normal start. (Before Prompt AI it latched for 300 ms and such a press was
+  refused.) The exception is a STOP within 300 ms of the app's last start
+  when no stop write arrived (a lost MOVE_STOP): the app still counts as
+  commanding, so it latches, and clears by silence 300 ms after that STOP.
 
-If the collision latch (0x06) is already set when a STOP_ALL arrives, it stays
-a collision latch and starts keep getting 0x06. While the stop latch is set,
-a start is answered 0x07 even if a collision sequence is running (Bed Status
-bit 0). Checked in the same place as 0x06: after the viewer and settings-mode
-rejections, before the #36 two-source check.
+The 300 ms is judged when the next command is processed (Prompt AI): a start
+that arrives 300 ms or more after the app's last start, refusal or latching
+STOP_ALL finds the latch already released and is a normal start.
+
+**Collision wins.** If the collision latch (0x06) is already set when a
+STOP_ALL arrives, it stays a collision latch and starts keep getting 0x06. If
+the stop latch is set and a start arrives while a collision sequence is
+running (Bed Status bit 0), the start is answered **0x06** and the latch
+becomes a collision latch (before Prompt AI it was answered 0x07). A
+collision latch never turns back into a stop latch. Checked in the same place
+as 0x06: after the viewer and settings-mode rejections, before the #36
+two-source check.
 
 App behaviour: on 0x07, end the hold (stop repeating; a MOVE_STOP /
 AUTO_LEVEL_STOP is fine) and show "Stopped - release and press again" until

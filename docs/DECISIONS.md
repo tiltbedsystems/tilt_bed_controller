@@ -2773,3 +2773,82 @@ bed_control.c only and cannot reach this code). **Not run on the bench.**
 REGRESSION §5 (5.A1-5.A6 updated) and §5b (new). What happens in each case,
 and the open points, are in the Prompt AH handoff
 (`fw_HANDOFF_2026-11-03_01_...`, b.A).
+
+### Amended by Prompt AI (2026-11-03)
+
+Reviewer's rulings on the Prompt AH handoff (`fw_HANDOFF_2026-11-03_01_...`,
+QUESTIONS f.1-f.3). `ble_bed_service.c` only; the text above is left as
+written and is superseded where it says otherwise. Line numbers are after the
+change.
+
+1. **Collision wins (f.1).** The start refusal (`:868-883`) now tests
+   COLLISION first: if the latch is COLLISION or `any_collision` is set, the
+   start is answered 0x06 and the latch is set to COLLISION - upgrading a STOP
+   latch; otherwise (latch STOP, no collision) 0x07. `latch_app_starts()`
+   (`:594-600`) already permitted the upgrade: its only guard refuses to
+   overwrite COLLISION, so STOP -> COLLISION happens and COLLISION -> STOP
+   never does. Replaces "With the stop latch set, a start is answered 0x07
+   even during a collision sequence (the STOP check comes first)". **Why:** a
+   collision is the more specific and more serious cause; the user should see
+   the collision screen, and the latch should carry the collision reason.
+2. **The silence release is judged first (f.2).** `service_app_commanding()`
+   is also called at the top of `ble_bed_service_tick()` (`:1171`), before the
+   disconnect stop and `process_pending_command()`; the existing call after
+   `service_move_watchdog()` stays (`:1190`). So "300 ms since the app's last
+   start" is decided when the next command is processed, not only if some
+   earlier pass ran after the deadline. What it changes (ASSERTED from code):
+   - A start processed 300 ms or more after the app's last start, refusal or
+     latching STOP_ALL now always finds the start latch NONE and the app's
+     half of the #36 latch released. Before, that held only if a main-loop
+     pass ran between the deadline and the command's own pass; otherwise the
+     start was refused (0x07 / 0x06) and re-latched for its whole hold.
+   - STOP latch: a press 300 ms or more after a latching STOP is a normal
+     start (AH A6.3 (b) no longer depends on a pass in between).
+   - COLLISION latch: such a press is still refused 0x06 and re-latched while
+     the collision sequence runs (`|| any_collision`); after the sequence it is
+     a normal start. Same results as before whenever a pass ran in the gap.
+   - #36: a held repeat that arrives 300 ms or more after the previous one (a
+     link stall) is a new press: the silence release clears the app's half of
+     the inhibit and, if the switches have released too, the inhibit clears
+     and the repeat starts the bed. This was already the case whenever a pass
+     ran in the gap (the trade-off stated in the AH handoff f.2).
+   - **One new case, narrow:** during an accepted app hold, if the late
+     repeat is processed in the very first pass after the deadline and the
+     watchdog expiry has not yet been acted on, the silence release now runs
+     first (bed_control's `source_commanding[APP]` becomes false), and the
+     repeat is then an identical repeat (`app_move_active` /
+     `app_auto_level_active` still true) that refreshes the watchdog - the move
+     continues with bed_control believing the app released. If the wall switch
+     is then pressed during that hold, the conflict stop and the inhibit happen
+     as usual, but the inhibit clears at the switch release and the app's next
+     held repeat starts the bed: #12's "stop then hand over" for that one hold.
+     Before, the repeat was processed first and pushed the deadline, so the app
+     stayed commanding. The window is one main-loop pass at the 300 ms point of
+     a stall (passes run every few ms during a hold, #45). Reported in the
+     Prompt AI handoff QUESTIONS; not changed.
+   - The disconnect stop in a pass where the deadline has also passed: the
+     latch print says `silence` instead of `disconnect`; the stop is the same.
+   - The watchdog expiry: in the expiry pass the silence release now runs
+     before the watchdog stop instead of after; the stop is the same.
+3. **STOP_ALL latches only when the app is commanding (f.3).** The STOP_ALL
+   branch (`:743-783`) first takes `latch_stop = app_commanding ||
+   app_start_latch != APP_LATCH_NONE` (`:752`) - an app button held, or the
+   app's last start less than 300 ms ago with no stop write, or a latch
+   already set (the second term is implied by the first: a latch is never set
+   without `app_commanding`). Everything STOP_ALL did before is unchanged
+   (both roles, watchdog cancelled, both app flags cleared, the app's half of
+   #36 released, `app_stop_all()`, 0x00 to the sender). Then only if
+   `latch_stop`: `latch_app_starts(APP_LATCH_STOP)` and `BLE: STOP_ALL latch
+   set (conn=N)` (`, kept as collision` as before); otherwise no latch and
+   `BLE: STOP_ALL (no app hold, no latch)` (same flag, `BLE_DEBUG_WATCHDOG_LOG`).
+   **Why:** with no app button held there is nothing to wait for; latching made
+   the user's next press within 300 ms fail for no reason. Per role: a
+   viewer's STOP_ALL while the control phone holds still latches (the control
+   app is commanding); a viewer's STOP_ALL with the control app idle does not.
+   After a clean release (MOVE_STOP / AUTO_LEVEL_STOP), `app_commanding` is
+   false at once, so a STOP right after it does not latch; after a release
+   whose stop write was lost it latches until silence.
+
+**Status:** builds clean (no warnings) with `BLE_DEBUG_WATCHDOG_LOG` 1 and 0;
+host test unchanged. **Not run on the bench.** REGRESSION §5b updated.
+What each AH A6 case does now is in the Prompt AI handoff.

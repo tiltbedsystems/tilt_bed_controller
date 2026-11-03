@@ -44,6 +44,7 @@
 
 #include "sl_component_catalog.h"
 #include "em_gpio.h"
+#include "sl_hal_emu.h"   // sl_hal_emu_get_reset_cause() / sl_hal_emu_clear_reset_cause()
 #include "pin_config.h"
 #include "sl_atomic.h"
 #include "sl_pwm.h"
@@ -382,6 +383,49 @@ void app_reset_auto_level_timer(void)
 
 // find_sensitivity_index()/apply_sensitivity_level() moved to settings_mode.c
 
+// Reset cause at boot (Prompt AI A4). EMU->RSTCAUSE bits for the EFR32BG22,
+// named as in the device header (efr32bg22_emu.h, EMU_RSTCAUSE_*). More than
+// one bit can be set at once (e.g. a power cut can show POR with a BOD).
+#if !BED_CAPTURE_MOTOR_CURRENTS
+static const struct {
+  uint32_t mask;
+  const char *name;
+} reset_cause_names[] = {
+  { EMU_RSTCAUSE_POR,       "POR" },
+  { EMU_RSTCAUSE_PIN,       "PIN" },
+  { EMU_RSTCAUSE_EM4,       "EM4" },
+  { EMU_RSTCAUSE_WDOG0,     "WDOG0" },
+  { EMU_RSTCAUSE_LOCKUP,    "LOCKUP" },
+  { EMU_RSTCAUSE_SYSREQ,    "SYSREQ" },
+  { EMU_RSTCAUSE_DVDDBOD,   "DVDDBOD" },
+  { EMU_RSTCAUSE_DVDDLEBOD, "DVDDLEBOD" },
+  { EMU_RSTCAUSE_DECBOD,    "DECBOD" },
+  { EMU_RSTCAUSE_AVDDBOD,   "AVDDBOD" },
+  { EMU_RSTCAUSE_IOVDD0BOD, "IOVDD0BOD" },
+  { EMU_RSTCAUSE_DCI,       "DCI" },
+  { EMU_RSTCAUSE_VREGIN,    "VREGIN" },
+};
+
+static void print_reset_cause(uint32_t cause)
+{
+  uint32_t known = 0;
+  printf("Reset cause: 0x%08lX (", (unsigned long)cause);
+  bool first = true;
+  for (uint8_t i = 0; i < sizeof(reset_cause_names) / sizeof(reset_cause_names[0]); i++) {
+    if (cause & reset_cause_names[i].mask) {
+      printf("%s%s", first ? "" : " ", reset_cause_names[i].name);
+      first = false;
+    }
+    known |= reset_cause_names[i].mask;
+  }
+  if (cause & ~known) {
+    printf("%sother", first ? "" : " ");
+    first = false;
+  }
+  printf("%s)\r\n", first ? "none" : "");
+}
+#endif
+
 /*******************************************************************************
  *****************************   PUBLIC FUNCTIONS   ****************************
  ******************************************************************************/
@@ -396,6 +440,19 @@ void app_init(void)
 #if !BED_CAPTURE_MOTOR_CURRENTS
   printf("Welcome to the Tilt Bed application\r\n");
   printf("Application Version %d.%d.%d \r\n", VERSION_MAJOR, VERSION_MINOR, VERSION_BUILD);
+#endif
+
+  // Why the last reset happened (Prompt AI A4): EMU->RSTCAUSE, read with the
+  // SDK's EMU API (sl_hal_emu.h). The register accumulates bits until cleared,
+  // so clear it after reading (the API's own instruction), or the next boot
+  // would report this cause too. Nothing in the SDK code this project builds
+  // reads or clears it before here. Unconditional (PRE_SHIP F24's review).
+  uint32_t reset_cause = sl_hal_emu_get_reset_cause();
+  sl_hal_emu_clear_reset_cause();
+#if !BED_CAPTURE_MOTOR_CURRENTS
+  print_reset_cause(reset_cause);
+#else
+  (void)reset_cause;
 #endif
 
   // Initialize the Incremental Analog to Digital Converter (IADC)
