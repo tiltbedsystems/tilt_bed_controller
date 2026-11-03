@@ -106,6 +106,22 @@ offset 3  seq      u8   rolling per-connection sequence number
 DECISIONS #34). Out-of-range args are `REJECTED_INVALID`, as is any write
 that is not exactly 4 bytes.
 
+**AUTO_LEVEL_START - when the bed first moves** (Prompt AI part B; from
+code, not measured). The first motion comes **at least 1.5 s after the first
+accepted AUTO_LEVEL_START** (`STEADY_ACCEL_READ_TIMER_TIME`, 1500 ms: Step 1,
+the settling read, while Bed Status bit 5 AUTO_LEVEL_SETTLING is 1), plus a
+few main-loop passes. Then:
+
+- if the first axis to level is more than 0.3° off, its motors start at once;
+- if it is within the pulse band (0.1° < |angle| ≤ 0.3°,
+  `PULSE_START_TOLERANCE`), the first pulse comes **a further 0.35 s** later
+  (`SNEAK_MOTOR_OFF_TIME`);
+- if **both** axes are within 0.1° (`CLOSE_TOLERANCE`), there is **no
+  motion**: the run ends with LEVELED (bit 4) set.
+
+The app should fill "Hold to level" over 1.5 s and snap to full when bit 5
+clears (§6), rather than rely on the 1.5 s alone.
+
 `STOP_ALL` does not share the deferred-command slot the other opcodes use.
 That slot is last-write-wins, which is safe for everything that is
 self-correcting — a lost MOVE_START is re-sent 100 ms later, a lost MOVE_STOP
@@ -216,7 +232,8 @@ offset 0   flags            u8   bit0 any_collision
                                  bit2 lights_on
                                  bit3 tilt_fresh   ← NEW, see below
                                  bit4 leveled      ← see "LEVELED (bit 4)" below
-                                 bits5-7 reserved (0)
+                                 bit5 auto_level_settling ← see "AUTO_LEVEL_SETTLING (bit 5)" below
+                                 bits6-7 reserved (0)
 offset 1   active_source    u8   0 NONE, 1 SWITCHES, 2 APP
 offset 2   command          u8   0 NONE, 1 MOVE, 2 AUTO_LEVEL, 3 LIGHTS
 offset 3   command_detail   u8   bits0-2 target (0-4), bit3 direction (0 down/1 up)
@@ -266,6 +283,34 @@ A change of bit 4 is a state-flag change, so it is notified at once
 (`status_flags_changed()` compares bytes 0-3, `ble_bed_service.c`), like the
 other flag bits. Collision during a run is shown by bit 0, not by bit 4: a
 run that ends in a collision never sets bit 4.
+
+### AUTO_LEVEL_SETTLING (bit 5)
+
+Added 2026-11-03 (Prompt AI part B; DECISIONS #46, Prompt AI amendment), within protocol
+v1 - see "Protocol version and this change" below.
+
+**1** while an auto-level run, from either source, is in its **Step 1
+settling read**: the firmware has accepted the start and is waiting
+`STEADY_ACCEL_READ_TIMER_TIME` (1500 ms, `auto_level.c`) for the frame to
+settle before it reads the level of both axes. No motor runs during Step 1.
+**0** otherwise - before the run, from the moment Step 1's reading is taken
+(the run then levels, or ends at once if no levelling is needed), after the
+release, a STOP, a collision, and at all times outside auto-level.
+
+Precisely, it is the condition under which the firmware runs Step 1:
+`auto_level_active && !any_collision && active_switch == AUTO_LEVEL &&
+first_check` (`app_auto_level_settling()`, `bed_actions.c`). A change is a
+state-flag change (byte 0), so it is notified at once, like bits 0-4.
+
+**App use:** fill the "Hold to level" button over 1.5 s from the bit going
+to 1, and snap it to full when the bit clears. The 1.5 s is only for the
+animation; the bit gives the exact start and end, so a later retune of the
+firmware constant does not desynchronise the app. Expected sequence for an
+app hold: the first `0x00` to AUTO_LEVEL_START, bit 5 -> 1 in the same or
+the next notification, ~1.5 s later bit 5 -> 0, then either the first motor
+`on` bit (levelling), or LEVELED (bit 4) -> 1 with no motion (nothing to
+level), or - when the first axis is within the pulse band - no motion for a
+further ~0.35 s before the first pulse (§4).
 
 ### Tilt sign conventions
 
@@ -335,6 +380,11 @@ version bump.** It is additive: the bit was reserved and always 0, the byte
 layout does not change, and a client that ignores bit 4 behaves exactly as
 before. Amending v1 rests on the same pre-ship reasoning as above, and the
 after-first-ship rule above is unchanged by it.
+
+**AUTO_LEVEL_SETTLING, flag bit 5 (2026-11-03, Prompt AI): also amended in
+place, no version bump**, on the same grounds as bit 4: additive, the bit was
+reserved and always 0, the byte layout is unchanged, a client that ignores it
+behaves exactly as before.
 
 **`tilt_fresh` requires a one-bit firmware addition** implementing
 DECISIONS #17's app-era plan: continuous accelerometer sampling runs at a

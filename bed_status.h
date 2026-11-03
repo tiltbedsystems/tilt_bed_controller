@@ -61,6 +61,7 @@ typedef struct {
   bool in_settings_mode;
   bool lights_on;
   bool leveled;              // last auto-level run succeeded, nothing moved since (#46)
+  bool auto_level_settling;  // an auto-level run is in its Step 1 settling read (Prompt AI)
 
   bed_command_t command;
   bed_target_t command_target;       // valid only when command == BED_COMMAND_MOVE

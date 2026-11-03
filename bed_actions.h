@@ -64,4 +64,14 @@ bool app_lights_on(void);
 void app_set_leveled(bool leveled);
 bool app_leveled(void);
 
+// AUTO_LEVEL_SETTLING (Bed Status flag bit 5, Prompt AI part B): an auto-level
+// run of either source is in its Step 1 settling read. Derived each call; no
+// state. Main-loop context only.
+bool app_auto_level_settling(void);
+
+// Bench print: one line on each change of app_auto_level_settling(), behind
+// BED_DEBUG_LEVELED_LOG. Call once per app_process_action(); does nothing when
+// the flag is 0.
+void app_auto_level_settling_log_tick(void);
+
 #endif /* BED_ACTIONS_H_ */

@@ -782,6 +782,10 @@ void app_process_action(void)
       }
   }
 
+  // Bench print on each change of Bed Status bit 5 (AUTO_LEVEL_SETTLING),
+  // after the block above has run this pass's Step 1 work.
+  app_auto_level_settling_log_tick();
+
 
 /*******************************************************************************
 *** "Settings" Mode

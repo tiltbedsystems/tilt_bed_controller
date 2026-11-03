@@ -2364,6 +2364,28 @@ button was not used in this run (no `SW: 0x0002` line).
 REGRESSION 6.1 (the prints), 6.8 and 6.10b pass for the app path. Not
 covered: the physical button (6.10a), 6.10d, 6.10e, 6.10f.
 
+### Amended by Prompt AI (2026-11-03)
+
+Reviewer's Prompt AI, from the Prompt AH handoff (b.C, C3-C4, QUESTIONS f.8).
+The text above is left as written and is superseded where it says otherwise.
+
+1. **Flag bit 5 = AUTO_LEVEL_SETTLING (Prompt AI part B).** Next to bit 4 in
+   the same byte: 1 while an auto-level run of either source is in its Step 1
+   settling read, 0 otherwise. Defined as exactly the condition under which
+   `app.c`'s auto-level block runs Step 1 - `auto_level_active &&
+   !any_collision && active_switch == SWITCH_AUTO_LEVEL_VALUE && first_check`
+   (`app_auto_level_settling()`, `bed_actions.c`) - the prompt's
+   `auto_level_active && first_check` plus the block's own two guards, so the
+   bit cannot read 1 while Step 1 is not running. Encoded `flags |= 0x20`;
+   byte 0, so a change is notified at once. Bench print behind
+   `BED_DEBUG_LEVELED_LOG`: `AUTO_LEVEL_SETTLING (Bed Status bit 5) -> 0|1`,
+   one line per change, from `app_auto_level_settling_log_tick()` called once
+   per pass right after the auto-level block. **Why:** the app fills "Hold to
+   level" while the bed takes its first reading; a fixed 1.5 s in the app
+   would silently go wrong if the firmware constant changed, the bit gives
+   the exact start and end. Additive within protocol v1 (BLE_GATT_DESIGN §6);
+   no Protocol Version change. Builds clean; not run on the bench.
+
 ## 47. BED LIGHTS toggles the lights on the release of a short press
 
 Date: 2026-11-02. User decision 2026-11-02, implemented per the reviewer's

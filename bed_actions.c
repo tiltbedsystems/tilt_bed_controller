@@ -41,8 +41,9 @@ static bool bedlights_on = false; // Tracks if bedlights are turned on/off
 static bool double_check = false; // Used to double check level only one time
 
 // Bench print: one line on every change of the LEVELED flag (Bed Status flag
-// bit 4), so the bench log shows the bit without a phone. Fires only on a
-// change, never per pass. Pre-ship: 0 (PRE_SHIP.md).
+// bit 4), and of AUTO_LEVEL_SETTLING (bit 5, Prompt AI), so the bench log
+// shows the bits without a phone. Fires only on a change, never per pass.
+// Pre-ship: 0 (PRE_SHIP.md F19).
 #define BED_DEBUG_LEVELED_LOG 1
 
 // LEVELED (Bed Status flag bit 4, DECISIONS.md #46). Set when an auto-level
@@ -65,6 +66,30 @@ void app_set_leveled(bool leveled)
 bool app_leveled(void)
 {
   return bed_leveled;
+}
+
+// AUTO_LEVEL_SETTLING (Bed Status flag bit 5). Exactly the condition under
+// which app.c's auto-level block runs Step 1 (steady_accel_read_both_axes()):
+// the run is active, no collision sequence, active_switch still AUTO LEVEL,
+// and first_check not yet cleared by the STEADY_ACCEL_READ_TIMER_TIME expiry.
+// The last two terms are what app.c's block itself requires; without them the
+// bit could read 1 while Step 1 is not running.
+bool app_auto_level_settling(void)
+{
+  return auto_level_active && !any_collision
+         && (active_switch == SWITCH_AUTO_LEVEL_VALUE) && first_check;
+}
+
+void app_auto_level_settling_log_tick(void)
+{
+#if BED_DEBUG_LEVELED_LOG && !BED_CAPTURE_MOTOR_CURRENTS
+  static bool last_settling = false;
+  bool settling = app_auto_level_settling();
+  if (settling != last_settling) {
+    last_settling = settling;
+    printf("AUTO_LEVEL_SETTLING (Bed Status bit 5) -> %u\r\n", settling ? 1u : 0u);
+  }
+#endif
 }
 
 // Shared handling for a single-side motor button press
