@@ -48,6 +48,14 @@ don't check boxes in the committed copy.
 ## 1. Power-on & initialization
 
 - [ ] ⚡ Welcome banner and version print on UART
+- [ ] 1.R Reset cause (Prompt AI A4): right after the version line, one line
+      `Reset cause: 0x%08lX (<names>)`. Record it for: (a) a power cycle
+      (bench supply off/on) - expected from code `POR`, possibly with BOD
+      bits; (b) a reflash/reset from the debugger - expected `SYSREQ` or
+      `PIN`; (c) a press of the module's reset pin, if reachable - `PIN`.
+      Reboot again the same way: the line must not carry the previous boot's
+      bits (the register is cleared after the read). The expected names are
+      from the device header, not observed yet.
 - [ ] ⚡ "NVM3 initialized successfully" prints
 - [ ] ⚡ Loaded Roll / Pitch / Raise / Lower values print and match expected
       stored values
@@ -279,7 +287,11 @@ stopped` (PRE_SHIP F26). Full record: DECISIONS #48 "Bench result
 
 App connected as CONTROL, `BLE_DEBUG_WATCHDOG_LOG` 1, UART logged, no
 obstruction. "STOP" = the app's STOP button (STOP_ALL). Items 5b.1-5b.6 are
-the cases the Prompt AH handoff (b.A.6) works through from code. An app that
+the cases the Prompt AH handoff (b.A.6) works through from code, **as
+amended by Prompt AI (DECISIONS #49 amendment): a STOP latches only while the
+app is commanding (a button held, or released less than 300 ms ago without a
+stop write); a STOP with the app idle prints `BLE: STOP_ALL (no app hold, no
+latch)` and the next press is normal; collision wins over STOP (5b.8).** An app that
 does not yet end its holds on STOP keeps repeating the held button, which is
 the case 5b.1 tests; an app that does (the next app prompt) is 5b.2. **In
 every item: after the STOP nothing moves until the held button is released
@@ -301,15 +313,26 @@ and pressed again.**
       moves normally. If the app instead keeps repeating after its MOVE_STOP,
       the next repeat **starts the move** - record it (the firmware cannot tell
       a repeat after a MOVE_STOP from a new press; Prompt AH handoff f).
-- [ ] 5b.3 Nothing held: (a) tap STOP, press HEAD up within ~0.2 s and hold
-      1 s, release; (b) tap STOP again, wait at least 1 s, press HEAD up.
-      Observe (a): 0x07 for the press and its repeats, nothing moves; at the
-      release `BLE: start latch (stop) cleared (stop), K repeats refused`; a
-      fresh press then moves. (b): `BLE: start latch (stop) cleared (silence),
-      0 repeats refused` about 300 ms after the STOP; the press moves normally
-      (0x00). If (b)'s press is refused with 0x07, record it (Prompt AH
-      handoff f: in a main-loop pass the command is processed before the
-      silence check).
+- [ ] 5b.3 Nothing held (Prompt AI A3): (a) with no app button touched for
+      at least 1 s, tap STOP, press HEAD up within ~0.2 s and hold 1 s,
+      release; (b) tap STOP again, wait at least 1 s, press HEAD up. Observe
+      (a): `BLE: STOP_ALL (no app hold, no latch)`; the press **moves
+      normally (0x00)**, no 0x07, no `start latch` line. (b): the same - no
+      latch line at all. (Before Prompt AI, (a) was refused 0x07 until
+      released.) (c) Optional, the lost-stop case: press and release HEAD up
+      quickly and tap STOP within ~0.2 s of the release - if the app's
+      MOVE_STOP reached the bed, `no app hold, no latch`; if the app sends no
+      stop write at the lift, `STOP_ALL latch set` then `start latch (stop)
+      cleared (silence)` ~300 ms later. Record which.
+- [ ] 5b.3d (Prompt AI A2) Hold HEAD up in the app, tap STOP, keep holding
+      ~1 s, release, and press HEAD up again about 0.5 s after the release.
+      Observe: the release clears the latch (`cleared (stop)`, or `cleared
+      (silence)` if the app sent no stop write); the new press moves (0x00),
+      never 0x07. A2 itself (the silence check before the command, for the
+      case where no main-loop pass ran after the 300 ms deadline) cannot be
+      isolated on the bench: with a phone subscribed the idle tilt sampler now
+      runs a pass every 100 ms. Any press refused 0x07 more than 300 ms after
+      the last app start or latching STOP is a failure - record it.
 - [ ] 5b.4 App AUTO LEVEL hold from off-level, tap STOP mid-run, keep
       holding ~2 s, release, press AUTO LEVEL again. Observe: auto-level stops
       at the STOP (motors off, red LED off); `STOP_ALL latch set` and `BLE:
@@ -318,8 +341,10 @@ and pressed again.**
       from Step 1); at the release `BLE: start latch (stop) cleared (stop), K
       repeats refused`; the fresh press starts a new run (`Step 1`). If the
       bed was LEVELED, no `LEVELED` line at the STOP.
-- [ ] 5b.5 Second phone connected as VIEWER. Control phone holding a move;
-      tap STOP on the viewer. Observe: the bed stops; viewer gets 0x00; `BLE:
+- [ ] 5b.5 Second phone connected as VIEWER. (Prompt AI A3: first, with the
+      control phone idle, tap STOP on the viewer: `BLE: STOP_ALL (no app hold,
+      no latch)`, and a control press right after moves normally.) Then:
+      control phone holding a move; tap STOP on the viewer. Observe: the bed stops; viewer gets 0x00; `BLE:
       STOP_ALL latch set (conn=V)`; the control phone gets 0x07 for every held
       repeat and **nothing restarts**; on the control release `BLE: start
       latch (stop) cleared (stop), K repeats refused`. Optional: lift the
@@ -330,12 +355,23 @@ and pressed again.**
       app while still holding it ~2 s; release; press it again. Expected from
       code: the bed stops at the STOP and **does not restart while the button
       is still held** (no new press edge, no `SW:` line until the release);
-      App: 0x00; `BLE: STOP_ALL latch set (conn=N)`; at the release an
+      App: 0x00; `BLE: STOP_ALL (no app hold, no latch)` (Prompt AI A3 - the
+      app was idle; before, `STOP_ALL latch set`); at the release an
       `SW: ... up` line and nothing moves; the next physical press moves
       normally. Repeat holding the physical AUTO LEVEL button: auto-level
       stops and does not restart (no `Step 1`) until released and pressed
       again.
-- [ ] 5b.7 BLE link stays up (no disconnect) through 5b.1-5b.6.
+- [ ] 5b.8 Collision wins (Prompt AI A1). App holding HEAD up; tap STOP and
+      **keep the HEAD finger down** (0x07 per repeat); while still holding,
+      press a **physical** move button and push on the frame until a
+      collision trips (`Tripped on ...`, `Once`). Observe: from the trip
+      until the release, the held app repeats get **0x06**, not 0x07 (the
+      app shows the collision screen); at the app release `BLE: start latch
+      (collision) cleared (stop), K repeats refused` - "collision", although
+      the latch was set by the STOP. Nothing restarts. (Before Prompt AI the
+      repeats stayed 0x07 and the line said "(stop)".) Harder to stage than
+      the others: record what was actually done.
+- [ ] 5b.7 BLE link stays up (no disconnect) through 5b.1-5b.6 and 5b.8.
 
 ## 6. Auto-level
 
@@ -431,6 +467,19 @@ open question, Prompt AC handoff.
   - [ ] 6.10e With it set, hold BED LIGHTS 5 s into settings mode: `-> 0`
         at entry.
   - [ ] 6.10f With it set, STOP_ALL from the app: no LEVELED line (it stays 1).
+- [ ] 6.11 AUTO_LEVEL_SETTLING, Bed Status flag bit 5 (Prompt AI part B).
+      With `BED_DEBUG_LEVELED_LOG` 1 each change prints
+      `AUTO_LEVEL_SETTLING (Bed Status bit 5) -> 0|1`.
+  - [ ] 6.11a App AUTO LEVEL from off-level: `Step 1: ROLL and PITCH check`
+        then `AUTO_LEVEL_SETTLING (Bed Status bit 5) -> 1`; about 1.5 s
+        later `-> 0`, before `Step 2: ...` (or before `Bed is disabled, no
+        leveling required` from a level bed). The app's "Hold to level"
+        fill ends when the bit clears. No motor runs while it is 1.
+  - [ ] 6.11b Release AUTO LEVEL within 1 s of the press: `-> 0` at the
+        release; no `Step 2`.
+  - [ ] 6.11c The physical AUTO LEVEL button: the same lines as 6.11a.
+  - [ ] 6.11d From a start within the pulse band (6.6): `-> 0`, then ~0.35 s
+        with no motion, then `Pulse on...`.
 
 **Recorded result, 2026-11-02 (firmware `b848e48`, Galaxy S23 on app
 `4e66328`, log `round3_bench_2026-11-02.log`).** VERIFIED (user's bench run).
@@ -443,6 +492,48 @@ path**; 6.10c is seen for app moves and an app AUTO LEVEL press. Every hold
 line reads `longest between passes 0 ms` (62 of 62; DECISIONS #45). Not
 covered: the physical AUTO LEVEL button (6.1 and 6.10a as written), 6.2-6.7,
 6.10d-6.10f. Full record: DECISIONS #46 "Bench result (2026-11-02)".
+
+## 6b. Live idle tilt and self-clearing LEVELED (Prompt AI parts C-D, DECISIONS #50, #46 amendment)
+
+App open and subscribed (CONTROL), `TILT_IDLE_DIAG` 1, `BED_DEBUG_LEVELED_LOG`
+1, `BLE_DEBUG_WATCHDOG_LOG` 1, UART logged. "TILT line" = `TILT idle: N
+samples in T ms, roll min .. max .. p2p .., pitch min .. max .. p2p .. (deg
+x100, pitch internal sign)`. Record every TILT line's p2p values: they set
+`TILT_IDLE_TAU_MS` and the LEVELED exit band (0.3° = 30).
+
+- [ ] 6b.1 At rest, app open, 30 s, nobody touching the bed. Observe: the
+      app's angles update about 5 times a second and are **not greyed**
+      (`tilt_fresh` = 1); a TILT line about every 10 s, the first ~12 s
+      after the app opened (0.5 s burst + 1.5 s settling + 10 s), with N
+      about 100 and T about 10000; roll and pitch p2p small (record them).
+      If N is well below 100 the sampler is not running at 10 Hz - record it.
+- [ ] 6b.2 After a move (app or switch): no jump in the shown angles when the
+      move ends; the shown angle settles within ~1 s; TILT lines resume ~12 s
+      after the move ends. During the move the angles update at 10 Hz as
+      before.
+- [ ] 6b.3 After an auto-level (app): when the run ends, the shown angle does
+      not jump by more than a few hundredths of a degree; LEVELED stays 1 at
+      rest - **no `LEVELED ... -> 0` line for 60 s** with nobody touching the
+      bed; TILT lines resume. Record the shown roll/pitch.
+- [ ] 6b.4 BLE link stays up: 10 minutes at rest with the app open (no
+      `connection_closed`), then 5 app moves and 2 app auto-levels: no `BLE:
+      WATCHDOG STOP`, every `hold end` line `longest between passes 0 ms`.
+- [ ] 6b.5 **LEVELED clears by tilt (part D).** After a successful
+      auto-level (`LEVELED ... -> 1`), wait at least 3 s, then tilt the bed by
+      hand off level by clearly more than 0.3° (lift or press one side or
+      corner) and hold it. Observe: `LEVELED (Bed Status bit 4) -> 0` about
+      **2 s** after the tilt (~2.2 s with the filter lag); the app's "Level
+      reached" clears. Let go: no `-> 1` line (it is never set from tilt).
+- [ ] 6b.6 **A brief bump does nothing.** With LEVELED 1, push the frame off
+      level and let go within ~1 s, a few times. Observe: no `LEVELED` line.
+- [ ] 6b.7 Settings mode and REFRESH_TILT: entering settings mode stops the
+      TILT lines (no new line while in it); after leaving, they resume ~12 s
+      later. A REFRESH_TILT from the app restarts the 12 s.
+- [ ] 6b.8 No phone: close the app (unsubscribe) - TILT lines stop. Then
+      PRE_SHIP F11: idle current with the app open and subscribed, and not.
+- [ ] 6b.9 PRE_SHIP F30: put the app in the background (phone still
+      connected). Record whether the TILT lines stop (they will not until the
+      app unsubscribes when backgrounded).
 
 ## 7. Settings mode
 
