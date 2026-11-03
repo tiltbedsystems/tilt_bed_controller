@@ -1664,3 +1664,51 @@ Prompt Y rulings record above.
 - ...that STOP_ALL always clears the latch: from a viewer during a latch it does not (DECISIONS #48 amendment). The original #48 text still says "from either role" and "does not set the latch" for the `any_collision` refusal; the amendment supersedes it.
 - ...that the AF b.6 / b.10 tables for B3 and B5 are current: superseded by the AG handoff b.
 - ...that the app handles 0x06, or that the reverse runs its full 500 ms.
+
+## 2026-11-03 — Prompt AH: STOP waits for release (stop latch), bench record of 2026-11-02, live-level report
+
+**Commits**
+
+- `48c5cf6` — Part A. `ble_bed_service.c` only among sources: `app_collision_latched` (#48) became `app_start_latch` (NONE / COLLISION / STOP); `latch_app_starts()` is the only place it is set and always calls `note_app_commanding()` (callers: collision trip `:654`, STOP_ALL `:757`, start refusal `:846` / `:849`); every STOP_ALL (control or viewer) sets reason STOP after its stop and 0x00, never clears the latch, and keeps COLLISION as COLLISION; while STOP-latched, app MOVE_START / AUTO_LEVEL_START get new result 0x07 STOP_LATCHED. Prints `BLE: STOP_ALL latch set (conn=N)` and `BLE: start latch (<set>) cleared (<reason>), K repeats refused`. Docs: BLE_GATT_DESIGN §4 row 0x06 and §7 (row 0x07, 0x06 release list), DECISIONS #49, REGRESSION 5.A1-5.A6 updated + new §5b. Prompt AH file committed.
+- `169b2f7` — Part B, docs only: roll sign is specification (BLE_GATT_DESIGN §6); bench results added to DECISIONS #45, #46, #48; REGRESSION §5, §6, §8 recorded results; PRE_SHIP F26 widened and a collision-location row.
+- The handoff `docs/handoffs/fw_HANDOFF_2026-11-03_01_stop-latch-and-live-level-report.md` and this entry are committed together after `169b2f7`. Part C is in the handoff only (no code).
+
+**VERIFIED**
+
+- Start state: HEAD `b848e48` = `origin/main` after `git fetch`; only `.projectlinkstore` modified, the prompt untracked.
+- Builds (CLI, as the prompt asks): ELF before = 245,620 / 784 / 72,476 (the AG record). After the edit, `BLE_DEBUG_WATCHDOG_LOG` 1: exit 0, no warning/error lines, 245,732 / 788 / 72,472 (text +112, data +4, bss -4). At 0: exit 0, no warnings, 243,956 / 780 / 72,480. Back at 1: identical to the first; `ble_bed_service.h` unchanged. After both commits `ninja: no work to do`.
+- Host test `test/bed_control_test.c`: `0 check(s) failed`.
+- Bench flags 0 (`BED_BENCH_PROVOKE_RUNAWAY`, `BLE_BENCH_WIPE_BONDS`, `BED_CAPTURE_MOTOR_CURRENTS`); `BLE_DEBUG_WATCHDOG_LOG` 1. No `config/`, `autogen/`, GATT or Protocol Version change.
+- From code (`48c5cf6`): callers of `note_app_stopped_commanding()` are silence `:628`, watchdog `:695`, MOVE_STOP `:925`, AUTO_LEVEL_STOP `:964`, disconnect `:1149` - STOP_ALL is no longer one. The latch is assigned only inside `latch_app_starts()` (`:589-595`) and `note_app_stopped_commanding()` (`:614`, cleared).
+- From the 2026-11-02 bench log (`round3_bench_2026-11-02.log`, Andrew's run on `b848e48`, S23, app `4e66328`): six successful app auto-levels with `LEVELED -> 1`, `Exit auto-level`, `Bed is level` (both one-axis outcomes included; the prompt said four), `-> 0` at the next motion start; 5.A1 for an app that ends its hold at the first 0x06 (lines 313-323); `FAILSAFE` after the app collision (line 323); all 62 hold-end lines `longest between passes 0 ms`; no `SW: 0x0008`. Roll sign: the user's report (no tilt values in the log).
+
+**ASSERTED-but-untested** (nothing ran on the bed)
+
+- The whole stop latch (handoff b.A.6): a held app button after a STOP stays stopped until released (0x07 per repeat); an AUTO LEVEL hold does not restart from Step 1; a viewer's STOP_ALL also latches the control app; a STOP_ALL during a COLLISION latch keeps it COLLISION (0x06) and nothing restarts after the sequence.
+- A held **physical** button does not restart after an app STOP_ALL (edge-triggered sampler, `switch_held` still set) - no change to switch_input.c needed.
+- A press 300 ms or more after a STOP tapped with nothing held is accepted only if a main-loop pass ran after the deadline; in the command's own pass the command is processed before the silence check (handoff f).
+- Part C (the live-level report) is analysis from code; nothing measured.
+
+**Open**
+
+- Bench: REGRESSION §5b (new) and 5.A4 / 5.A6 (changed), with `BLE_DEBUG_WATCHDOG_LOG` 1. Still not tested from the 2026-11-02 run: 5.A1 with an app that keeps repeating, 5.A2-5.A6, the physical BED LIGHTS checks (§8, 8.a-8.d), the physical AUTO LEVEL button (6.1 / 6.10a).
+- Handoff QUESTIONS (f): STOP-vs-collision precedence; the pass-order question for the silence clear; the 300 ms window after a STOP with nothing held; the app sending MOVE_STOP then still repeating; the extra print suffix; the reboot at log line 287; the Part C rulings.
+- App repo: STOP ends every hold, 0x07 handling, its copy of BLE_GATT_DESIGN §7.
+
+**Rulings recorded (Prompt AH B7, on the Prompt AG QUESTIONS)**
+
+- f.1 accepted (after a viewer STOP_ALL the control-phone disconnect clears the latch by silence).
+- f.2 **WITHDRAWN** - replaced by Part A (DECISIONS #49): no STOP_ALL clears the latch.
+- f.3 moot under Part A (STOP_ALL no longer clears the latch from either role).
+- f.4 folded into PRE_SHIP F26 ("what can cut the reverse short": the fail-safe, and any app release during the reverse) - done in `169b2f7`.
+- f.5 moot under Part A.
+- f.6 done in A2 (`latch_app_starts()`).
+
+**The next session must NOT assume**
+
+- ...that the stop latch works on a bed: built, not run.
+- ...that STOP_ALL clears any latch: since #49 it never does. DECISIONS #48 (and its AG amendment) still say it does from the control phone; #49 supersedes that.
+- ...that the old print `BLE: collision latch cleared (...)` will appear: it is now `BLE: start latch (collision|stop) cleared (...)`. The 2026-11-02 log shows the old text.
+- ...that "four" app auto-levels is the record: the log has six.
+- ...that roll's sign was checked against the UART: it is the user's observation of the app.
+- ...that the app ends its holds on STOP or handles 0x07: not written yet.
