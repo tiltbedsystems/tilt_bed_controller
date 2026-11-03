@@ -1712,3 +1712,56 @@ Prompt Y rulings record above.
 - ...that "four" app auto-levels is the record: the log has six.
 - ...that roll's sign was checked against the UART: it is the user's observation of the app.
 - ...that the app ends its holds on STOP or handles 0x07: not written yet.
+
+## 2026-11-03 — Prompt AI: latch refinements, reset cause, AUTO_LEVEL_SETTLING bit, live idle tilt, self-clearing LEVELED
+
+**Commits**
+
+- `8e1242d` — Part A. `ble_bed_service.c`: A1 collision wins (the start refusal tests COLLISION / `any_collision` first -> 0x06 and the latch becomes COLLISION, upgrading STOP; only STOP with no collision -> 0x07); A2 `service_app_commanding()` also at the top of `ble_bed_service_tick()`; A3 STOP_ALL sets the STOP latch only if `app_commanding` (or a latch is set), else prints `BLE: STOP_ALL (no app hold, no latch)`. `app.c`: A4 `Reset cause: 0x%08lX (<names>)` after the banner, `sl_hal_emu_get_reset_cause()` then `sl_hal_emu_clear_reset_cause()` (`platform/peripheral/inc/sl_hal_emu.h`). Docs: BLE_GATT_DESIGN §4 STOP_ALL row and §7 STOP_LATCHED; DECISIONS #49 "Amended by Prompt AI"; PRE_SHIP F24. Prompt AI file committed.
+- `0d45fff` — Part B. Bed Status flag bit 5 AUTO_LEVEL_SETTLING = `auto_level_active && !any_collision && active_switch == SWITCH_AUTO_LEVEL_VALUE && first_check` (`app_auto_level_settling()`, `bed_actions.c`); print `AUTO_LEVEL_SETTLING (Bed Status bit 5) -> 0|1` behind `BED_DEBUG_LEVELED_LOG`. Docs: BLE_GATT_DESIGN §6 (bit 5) and §4 (when the bed first moves); DECISIONS #46 amendment item 1; PRE_SHIP F19.
+- `3e9349f` — Part C. Idle tilt sampler in `auto_level.c` (10 Hz sleeptimer flag, one `read_accel()` per flag, own filter alpha = 1 - exp(-dt/500 ms), seeded from the per-pass chain if it ran in the previous pass else from the first sample); `bed_status.c` ships it and sets `tilt_fresh`; 5 Hz idle notify; `TILT_IDLE_DIAG` 10 s noise line. Docs: DECISIONS #50 (new); BLE_GATT_DESIGN §6; PRE_SHIP F11, F16, new F29, F30.
+- `8996259` — Part D. LEVELED clears when the idle filtered |roll| or |pitch| > 0.3° (30) continuously for 2000 ms, judged only 1500 ms (3 tau) after the idle window opened; `app.c` calls `app_set_leveled(false)`. Never sets bit 4. Docs: BLE_GATT_DESIGN §6 bit 4; DECISIONS #46 amendment item 2.
+- `05c4c2f` — Part E. REGRESSION 1.R, §5b (5b.3, 5b.3d, 5b.5, 5b.6, new 5b.8), 6.11, new §6b.
+- The handoff `docs/handoffs/fw_HANDOFF_2026-11-03_02_latch-refinements-live-tilt.md` and this entry are committed together after `05c4c2f`, then pushed.
+
+**Rulings recorded (Prompt AI E2, on the Prompt AH handoff QUESTIONS)**
+
+- f.1 collision wins - done (A1, `8e1242d`).
+- f.2 fixed - silence judged first (A2, `8e1242d`).
+- f.3 STOP_ALL latches only when the app is commanding - done (A3, `8e1242d`).
+- f.4 accepted - the app prompt will stop repeating after STOP.
+- f.5 keep the `, kept as collision` suffix.
+- f.6 log line 287 (2026-11-02) was Andrew's deliberate power cut (bench step 13); the reset-cause print is added (A4, `8e1242d`).
+- f.7 accepted - six auto-levels; the collision-location row stays in PRE_SHIP until Phase 1b has a home.
+- f.8 bit 5 AUTO_LEVEL_SETTLING (B), self-clearing LEVELED (D) and the live idle tilt (C, Option B) as specified in Prompt AI.
+- f.9 open - RIGHT-raised (roll negative) not yet checked; the next bench does it.
+
+**VERIFIED**
+
+- Start state: HEAD `cd2a148` = `origin/main` after `git fetch`; `.projectlinkstore` modified, the prompt untracked, nothing else.
+- Builds from the CLI, every one exit 0 with no warning/error line: baseline 245,732 / 788 / 72,472 (= AH record); after A 246,236 (A at `BLE_DEBUG_WATCHDOG_LOG` 0: 244,380 / 780 / 72,480); after B 246,412 (`BED_DEBUG_LEVELED_LOG` 0: 246,260); after C 248,380 (`TILT_IDLE_DIAG` 0: 248,004); after D 248,540. Final matrix on the finished source: defaults 248,540 / 788 / 72,472; `TILT_IDLE_DIAG` 0 248,164; `BED_DEBUG_LEVELED_LOG` 0 248,396; `BLE_DEBUG_WATCHDOG_LOG` 0 246,652 / 780 / 72,480; all three 0 246,132; `BED_CAPTURE_MOTOR_CURRENTS` 1 (extra) 245,028; restored 248,540. Total text +2,808 B against `cd2a148`.
+- The reset-cause API: `sl_hal_emu_get_reset_cause()` / `sl_hal_emu_clear_reset_cause()` are inline in `sl_hal_emu.h` (`:1177-1199`); `__INLINE` is plain `inline` for GCC (`cmsis_gcc.h:44`); `sl_hal_emu.c` is not compiled; the link succeeds and `nm` shows no `sl_hal_emu_*` symbol (inlined at the unconditional `-Os`). None of the 178 SDK `.c` files this project compiles reads or clears RSTCAUSE.
+- Host test `test/bed_control_test.c`: `0 check(s) failed`. Bench-only flags 0 (`BED_BENCH_PROVOKE_RUNAWAY`, `BLE_BENCH_WIPE_BONDS`, `BED_CAPTURE_MOTOR_CURRENTS`); new `TILT_IDLE_DIAG` 1, `BED_DEBUG_LEVELED_LOG` 1, `BLE_DEBUG_WATCHDOG_LOG` 1. No `config/`, `autogen/`, `bed_control.c` or GATT change (`git diff --stat cd2a148 HEAD -- config autogen bed_control.c '*.btconf'` empty).
+
+**ASSERTED-but-untested** (nothing ran on a bed)
+
+- Everything in A-D on hardware: the refusal codes and prints of every restated AH A6 case; the reset-cause names for a power cut / debugger reset; bit 5's timing (~1.5 s); the idle sampler running at 10 Hz with the CPU sleeping between samples; the 5 Hz notify; `tilt_fresh` behaviour; the link staying up with the idle sampler; the filter's noise and lag; LEVELED clearing ~2.2 s after a hand tilt and not on a brief bump.
+- Bus occupancy ~0.9-1.4 % and EM0 duty +2-3 % for the idle sampler: estimates.
+- A2's one new narrow case (a stalled hold's late repeat in the first pass after the deadline leaves bed_control's app "commanding" flag false for the rest of that hold): from code; reported, not changed.
+
+**Open**
+
+- Bench: REGRESSION 1.R, §5b (incl. 5b.3d, 5b.8), 6.11, §6b - with the TILT lines' p2p values recorded to tune `TILT_IDLE_TAU_MS` and `LEVELED_EXIT_BAND`. Still open from before: §5b and 5.A4 / 5.A6 (never run), §8, 6.1/6.10a physical AUTO LEVEL, f.9 RIGHT-raised roll.
+- Handoff QUESTIONS (f): the A2 narrow #36 case (with a one-line proposal), the idle-window/burst reading, the seed rule, `tilt_fresh` covering auto-level's chain, the A3 "released less than 300 ms ago" gloss, the idle->per-pass step, the reset-cause inlining dependency.
+- PRE_SHIP F16 implemented but not closed (needs the bench); F29, F30 new.
+- App repo: bit 5 fill, `tilt_fresh` ungating, 5 Hz handling, unsubscribe when backgrounded, 0x07/STOP ending holds.
+
+**The next session must NOT assume**
+
+- ...that any of this ran on a bed: built, not run.
+- ...that a STOP_ALL always latches: since Prompt AI only when the app is commanding. DECISIONS #49's main text says "Any STOP_ALL"; its Prompt AI amendment supersedes it.
+- ...that a STOP latch answers 0x07 during a collision: since Prompt AI it answers 0x06 and becomes COLLISION.
+- ...that LEVELED only clears on motion/collision/settings: it now also clears on idle tilt (phone subscribed only).
+- ...that offsets 4-7 at rest are the last burst's value: with a phone subscribed they are the idle chain's, which uses a different (time-constant) filter from the moving and auto-level chains. F15 is still open for those two.
+- ...that the `TILT idle` p2p numbers are noise of the sensor alone: they are the filtered output at τ = 500 ms on that bed, in that place, valid only with that τ.
+- ...that the Berkeley `bss` column measures static RAM: it includes `.stack` and `.memory_manager_heap`, which absorbs `.bss` growth; it cannot change. The `.bss` section is 12,000 B at the end; its baseline was not measured.
