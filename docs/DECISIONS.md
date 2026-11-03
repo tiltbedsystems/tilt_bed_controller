@@ -2253,6 +2253,17 @@ that produced the original stalls, and a desk bed at desk range (the van test
 at a realistic distance is in `docs/PRE_SHIP.md`). "Bed is level" (REGRESSION
 6.1) printed in none of the twelve runs; see the Prompt AC handoff, QUESTIONS.
 
+### Bench result (2026-11-02, Galaxy S23)
+
+Recorded 2026-11-03 (Prompt AH part B6). Andrew's bench run, firmware
+`b848e48` (`BLE_DEBUG_WATCHDOG_LOG` 1), Galaxy S23 on app `4e66328`, log
+`PuTTY Logs\round3_bench_2026-11-02.log` (425 lines). **VERIFIED (user's bench run).** All
+**62** `BLE: hold end` lines (55 `op=0x01`, 7 `op=0x03`) read `longest between
+passes 0 ms` (`grep -c 'hold end'` = 62; the same lines without `longest
+between passes 0 ms` = 0). Longest refresh gap per hold: 41-195 ms (the 195 ms
+is the AUTO LEVEL hold at line 364). No `BLE: WATCHDOG STOP` in the log. The
+mechanism question above is unchanged.
+
 ## 46. Bed Status flag bit 4 = LEVELED; "Bed is level" prints on every successful auto-level end
 
 Date: 2026-11-02. Reviewer's instruction (Prompt AE, part B), from the Prompt
@@ -2325,6 +2336,33 @@ Bluetooth stack callback.
 ### Status
 
 Builds clean (no warnings). **Not run on the bench.**
+
+### Bench result (2026-11-02)
+
+Recorded 2026-11-03 (Prompt AH part B2). Andrew's bench run, firmware
+`b848e48`, Galaxy S23 on app `4e66328`, log `PuTTY Logs\round3_bench_2026-11-02.log`.
+**VERIFIED (user's bench run)** for app auto-levels; the physical AUTO LEVEL
+button was not used in this run (no `SW: 0x0002` line).
+
+- **Six** successful app auto-levels (the prompt said four), each printing
+  `LEVELED (Bed Status bit 4) -> 1`, then `Exit auto-level`, then the
+  outcome's own line if any, then `Bed is level`, then its `BLE: hold end
+  op=0x03` line: lines 169-172 (both axes), 196-200 (`ROLL is disabled and
+  Pitch is level`), 219-223 (`PITCH is disabled and ROLL is level`), 245-252
+  (both axes), 361-364 (both axes), 410-417 (both axes). Both one-axis
+  outcomes are covered. `Bed is disabled, no leveling required` did not occur.
+- **`-> 0` at the next motion start:** line 173 (next app move, hold end at
+  174), 201 (next app AUTO LEVEL press: `Step 1` at 202, a run released after
+  8 refreshes at 203 without levelling), 224 (next move), 253 (next move, 254),
+  365 (next move). The last `-> 1` (410) has no following motion in the log.
+- No `-> 0` or `-> 1` line anywhere else (12 `LEVELED` lines in all, `grep
+  -n`).
+- No disconnect during any auto-level run: the six `connection_closed` lines
+  (91, 255, 262, 336, 418, 425) all read `reason=0x1013` and fall outside the
+  runs.
+
+REGRESSION 6.1 (the prints), 6.8 and 6.10b pass for the app path. Not
+covered: the physical button (6.10a), 6.10d, 6.10e, 6.10f.
 
 ## 47. BED LIGHTS toggles the lights on the release of a short press
 
@@ -2609,6 +2647,39 @@ sequence.
 
 **Status:** builds clean (no warnings) with `BLE_DEBUG_WATCHDOG_LOG` 1 and 0;
 host test unchanged and passes. **Not run on the bench.** REGRESSION 5.A3-5.A6.
+
+### Bench result (2026-11-02)
+
+Recorded 2026-11-03 (Prompt AH part B3). Andrew's bench run, firmware
+`b848e48` (#48 as amended by Prompt AG), Galaxy S23 on app `4e66328`, log
+`PuTTY Logs\round3_bench_2026-11-02.log`. **VERIFIED (user's bench run) for an app that ends its
+hold at the first 0x06.** One collision during an app MOVE hold (a RIGHT move:
+the hold's `Max Current` lines 309-312 read 4 / 19 / 1123 / 724, outputs C and
+D), lines 313-323:
+
+```
+313  Tripped on steady!
+314  Securit margin: 550
+315  Motor 0 Delta Current:  0
+316  Motor 1 Delta Current:  2
+317  Motor 2 Delta Current:  549
+318  Motor 3 Delta Current:  -24
+319  BLE: COLLISION_STOP seq=94 op=0x01 (latched)
+320  BLE: hold end op=0x01 seq=94: 21 refreshes, longest refresh gap 121 ms, longest between passes 0 ms
+321  Once
+322  BLE: collision latch cleared (stop), 1 repeats refused
+323  FAILSAFE: motors energised with nothing commanding - stopped
+```
+
+The trip (summed positive rise 0 + 2 + 549 = 551 > margin 550,
+`motor_current_functions.c:345-353`), the 0x06 with the hold's seq, the hold
+end in the same burst, `Once`, then the app's release (`stop`) after one
+refused repeat - as REGRESSION 5.A1 expects for an app that handles 0x06. The
+`FAILSAFE` line is PRE_SHIP F26 (observed; the log has no timestamps, so the
+length of the reverse is not known). **Not yet bench-tested:** the worst case,
+an app that keeps repeating while the finger is down (5.A1 as written), and
+5.A3-5.A6. The print text has since changed (`BLE: start latch (collision)
+cleared (...)`, #49).
 
 ## 49. STOP waits for release: a STOP_ALL latches app motion starts (STOP_LATCHED 0x07) until the app releases
 

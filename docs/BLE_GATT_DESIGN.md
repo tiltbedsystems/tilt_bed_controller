@@ -223,7 +223,6 @@ offset 3   command_detail   u8   bits0-2 target (0-4), bit3 direction (0 down/1 
                                  valid only when command == MOVE
 offset 4   roll_scaled      i16  ×100, deviation from level baseline
                                  POSITIVE = LEFT side raised
-                                 ** PROVISIONAL - see "Tilt sign conventions" **
 offset 6   pitch_scaled     i16  ×100, deviation from level baseline
                                  POSITIVE = HEAD raised
 offset 8   motor[0..3]      4 × { status u8, current_ma u16 }  = 12 B
@@ -282,17 +281,20 @@ The conversion is therefore applied exactly once, at the wire boundary, in
 `bed_status.c`'s `bed_status_get()`. Clients decode the wire value as-is; no
 client should apply a sign transform of its own.
 
-**Roll — PROVISIONAL, pending bench confirmation. `POSITIVE = LEFT raised`.**
+**Roll — SPECIFICATION. `POSITIVE = LEFT raised`.** Bench-confirmed
+2026-11-02 (Prompt AH part B1).
 
-This is **not** established. It is read off the frame diagram comment in
-`auto_level.c` (above `set_auto_level_motor_direction()`), which is a
-description of the intended mounting, not a measurement. The bench run that
-found the pitch sign wrong did not report on roll at all, and silence is not
-confirmation — the same run would have looked identical whether roll was right
-or wrong, because nobody checked it.
+It was first read off the frame diagram comment in `auto_level.c` (above
+`set_auto_level_motor_direction()`), a description of the intended mounting,
+and was carried as provisional until a bench check. On 2026-11-02 (Andrew,
+firmware `b848e48`, Galaxy S23 on app `4e66328`) the app, decoding the wire
+roll as-is (`kRollWireSign = +1` in the app), showed its level bubble and its
+words on the side that was actually raised. That observation is the user's
+report: the UART log of the run (`PuTTY Logs\round3_bench_2026-11-02.log`) carries no tilt values.
+Clients decode the wire value as-is, as for pitch.
 
-Treat the roll line as a hypothesis until a bench acceptance run confirms all
-four directions:
+The check to repeat after any change to the accelerometer mounting or to the
+tilt path:
 
 | Action | Expected wire value |
 |---|---|
@@ -300,10 +302,6 @@ four directions:
 | Raise FOOT | pitch NEGATIVE |
 | Raise LEFT | roll POSITIVE |
 | Raise RIGHT | roll NEGATIVE |
-
-Once that passes, delete the PROVISIONAL marker on offset 4 and this
-paragraph, and the roll line becomes specification like pitch. Until then, do
-not build a client behaviour that depends on roll's sign.
 
 ### Protocol version and this change
 

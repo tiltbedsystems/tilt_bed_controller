@@ -264,6 +264,17 @@ reads `BLE: start latch (collision) cleared (<reason>), K repeats refused`
       latch (collision) cleared (silence)` ~300 ms after its last repeat (not
       `disconnect`), and nothing moves.
 
+**Recorded result, 2026-11-02 (firmware `b848e48`, `BLE_DEBUG_WATCHDOG_LOG`
+1, Galaxy S23 on app `4e66328`, log `round3_bench_2026-11-02.log`).**
+VERIFIED (user's bench run). **5.A1 passes for an app that ends its hold at
+the first 0x06**: lines 313-323 - `Tripped on steady!`, the four deltas,
+`BLE: COLLISION_STOP seq=94 op=0x01 (latched)`, `BLE: hold end op=0x01
+seq=94 ...`, `Once`, `BLE: collision latch cleared (stop), 1 repeats refused`
+(the pre-#49 text), `FAILSAFE: motors energised with nothing commanding -
+stopped` (PRE_SHIP F26). Full record: DECISIONS #48 "Bench result
+(2026-11-02)". **Not yet tested:** 5.A1 with an app that keeps repeating,
+5.A2-5.A6.
+
 ## 5b. App STOP latch (DECISIONS #49)
 
 App connected as CONTROL, `BLE_DEBUG_WATCHDOG_LOG` 1, UART logged, no
@@ -421,6 +432,18 @@ open question, Prompt AC handoff.
         at entry.
   - [ ] 6.10f With it set, STOP_ALL from the app: no LEVELED line (it stays 1).
 
+**Recorded result, 2026-11-02 (firmware `b848e48`, Galaxy S23 on app
+`4e66328`, log `round3_bench_2026-11-02.log`).** VERIFIED (user's bench run).
+Six successful **app** auto-levels, each printing `LEVELED (Bed Status bit 4)
+-> 1`, `Exit auto-level`, the outcome line if any, `Bed is level`: lines
+169-171, 196-199 (ROLL disabled), 219-222 (PITCH disabled), 245-247, 361-363,
+410-412. `-> 0` at the next motion start (173, 201, 224, 253, 365). No
+disconnect during any run. **6.1 (prints), 6.8 and 6.10b pass for the app
+path**; 6.10c is seen for app moves and an app AUTO LEVEL press. Every hold
+line reads `longest between passes 0 ms` (62 of 62; DECISIONS #45). Not
+covered: the physical AUTO LEVEL button (6.1 and 6.10a as written), 6.2-6.7,
+6.10d-6.10f. Full record: DECISIONS #46 "Bench result (2026-11-02)".
+
 ## 7. Settings mode
 
 - [ ] ⚡ 7.1 Hold BED_LIGHTS 5 s: amber LED fast-blinks — settings mode active.
@@ -545,6 +568,10 @@ bench run), except where marked as the user's report.
       mid-hold. A brief amber flicker at the stop is possible: the stop turns
       every LED off and then amber back on, as app MOVE_STOP already does
       (DECISIONS #36 "The indicator blip").
+
+**Not yet tested (2026-11-02 bench):** the physical BED LIGHTS checks
+above, 8.a-8.d. That run used the app's Lights button only; its log has no
+`SW: 0x0008` (BED LIGHTS) line.
 
 ## 9. Cross-checks & UART health
 
