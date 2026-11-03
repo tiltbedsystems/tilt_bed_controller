@@ -99,7 +99,7 @@ offset 3  seq      u8   rolling per-connection sequence number
 | 0x03 | AUTO_LEVEL_START | — | — | `bed_auto_level_start(BED_SOURCE_APP)`. **Hold-to-run** (DECISIONS #36), matching the physical auto-level button: **repeated every 100 ms while held**, and it arms and refreshes the same 300 ms dead-man watchdog a MOVE_START does. A repeat must not re-enter the verb — that would reset the levelling state machine. Release sends AUTO_LEVEL_STOP, which stops immediately. |
 | 0x04 | AUTO_LEVEL_STOP | — | — | `bed_auto_level_stop(BED_SOURCE_APP)`. |
 | 0x05 | LIGHTS_SET | 0 off / 1 on | — | `bed_lights_set(BED_SOURCE_APP, …)`. Latched. |
-| 0x06 | STOP_ALL | — | — | Explicit full stop (maps to the `app_stop_all()` path: motors + auto-level + LEDs). The app's big red button. Always accepted from **any** role, control or viewer — this is the BLE embodiment of the stop-from-anyone rule (#12). |
+| 0x06 | STOP_ALL | — | — | Explicit full stop (maps to the `app_stop_all()` path: motors + auto-level + LEDs). The app's big red button. Always accepted from **any** role, control or viewer — this is the BLE embodiment of the stop-from-anyone rule (#12). Then latches app motion starts until the app releases (DECISIONS #49; §7, result 0x07). |
 | 0x07 | REFRESH_TILT | 0 | 0 | Opens a tilt sampling burst (DECISIONS #33, trigger T2) so the app can pull a fresh angle on demand. **Commands no motion, cancels no motion.** Accepted from **any** role and in settings mode — see the arbitration note. Both args must be 0; anything else is REJECTED_INVALID. |
 
 **Implementation status: all seven opcodes are implemented** (Stage C,
@@ -368,6 +368,7 @@ Notify, 2 bytes: `{ seq u8, result u8 }`, echoing the command's seq.
 | 0x04 | REJECTED_INVALID | malformed / unknown opcode |
 | 0x05 | WATCHDOG_STOP | connection stalled; movement stopped |
 | 0x06 | COLLISION_STOP | Collision: the app ends its hold and shows the collision screen (see below) |
+| 0x07 | STOP_LATCHED | "Stopped - release and press again" (see below) |
 
 **COLLISION_STOP (0x06), DECISIONS #48.** Sent in two cases:
 
@@ -387,14 +388,14 @@ Notify, 2 bytes: `{ seq u8, result u8 }`, echoing the command's seq.
    press made while any collision sequence runs - must be released before a
    new start is accepted, even after the sequence has ended.
 
-The latch clears when the app releases: MOVE_STOP, AUTO_LEVEL_STOP, STOP_ALL
-**from the control connection**, the control connection dropping while the
-app holds the bed, or `MOVE_WATCHDOG_MS` (300 ms) with no MOVE_START /
-AUTO_LEVEL_START from the app. **A viewer's STOP_ALL does not clear it**: it
-stops the bed as always (and is answered 0x00), but the control user may still
-be holding, so the latch then clears by the control app's own release or 300
-ms after its last MOVE_START / AUTO_LEVEL_START. A press after the release,
-once the collision sequence has ended, is a normal start. Checked after the viewer and settings-mode rejections and before
+The latch clears when the app releases: MOVE_STOP, AUTO_LEVEL_STOP, the
+control connection dropping while the app holds the bed, or `MOVE_WATCHDOG_MS`
+(300 ms) with no MOVE_START / AUTO_LEVEL_START (accepted or refused) and no
+STOP_ALL from the app. **STOP_ALL does not clear it, from either connection**
+(DECISIONS #49; before #49 the control connection's STOP_ALL did): it stops the
+bed as always and is answered 0x00, and the latch stays a collision latch, so
+the held button's repeats keep getting 0x06. A press after the release, once
+the collision sequence has ended, is a normal start. Checked after the viewer and settings-mode rejections and before
 the #36 two-source check, so a viewer still gets 0x02, settings mode 0x03, and
 the app is told "collision", not "wall switch".
 
@@ -404,8 +405,40 @@ the finger; a new press is a new hold. The firmware does not rely on this:
 the repeats of any hold that met a collision are refused until it releases,
 including a new press made while the collision sequence is still running.
 
-**Protocol version: additive within v1, no version change.** The code was
-unused and the byte layout is unchanged; a client that does not know 0x06
+**STOP_LATCHED (0x07), DECISIONS #49.** A STOP_ALL - from the control or a
+viewer connection - stops the bed (answered 0x00 to the sender, as always) and
+then sets the firmware's **stop latch**. While it is set, every MOVE_START and
+AUTO_LEVEL_START from the control connection is answered 0x07, echoing that
+command's own seq, and starts nothing; it does not arm the watchdog. The user
+may still have a finger on a held app button, and the app keeps repeating its
+start while the finger is down: those repeats are not a new press. Sent only
+in answer to a start; a STOP_ALL itself is answered 0x00.
+
+The stop latch clears exactly like the collision latch: MOVE_STOP,
+AUTO_LEVEL_STOP, the control connection dropping while the app holds the bed,
+or 300 ms with no MOVE_START / AUTO_LEVEL_START (accepted or refused) and no
+STOP_ALL from the app. A further STOP_ALL does not clear it. So:
+
+- a held app button after a STOP stays stopped until the finger is lifted,
+  then a fresh press is a normal start;
+- a press made within 300 ms of a STOP tapped with nothing held is refused
+  (0x07) and must be released and pressed again; a press after that is a
+  normal start.
+
+If the collision latch (0x06) is already set when a STOP_ALL arrives, it stays
+a collision latch and starts keep getting 0x06. While the stop latch is set,
+a start is answered 0x07 even if a collision sequence is running (Bed Status
+bit 0). Checked in the same place as 0x06: after the viewer and settings-mode
+rejections, before the #36 two-source check.
+
+App behaviour: on 0x07, end the hold (stop repeating; a MOVE_STOP /
+AUTO_LEVEL_STOP is fine) and show "Stopped - release and press again" until
+the user lifts the finger; a new press is a new hold. On its own STOP button
+the app should also end every hold it is running. The firmware does not rely
+on either: the repeats of a held button are refused until it releases.
+
+**Protocol version: additive within v1, no version change.** The codes were
+unused and the byte layout is unchanged; a client that does not know 0x06 or 0x07
 gets a result code it has no entry for, as for any future code. The
 Protocol Version value stays `01`; the after-first-ship rule in §6 is
 unchanged by this. The app repository's copy of this document was written

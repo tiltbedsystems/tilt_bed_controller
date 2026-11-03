@@ -193,7 +193,10 @@ pair is enough. With an app that does not yet handle COLLISION_STOP (0x06)
 it keeps repeating while the finger is down, which is the case these items
 test. With an app that does handle it, the hold ends at the first 0x06 and
 the latch clears at once (`stop`) or 300 ms later (`silence`); the motors
-must do the same in both cases.
+must do the same in both cases. Since DECISIONS #49 the "latch cleared" line
+reads `BLE: start latch (collision) cleared (<reason>), K repeats refused`
+(before: `BLE: collision latch cleared (...)`), and every STOP_ALL prints
+`BLE: STOP_ALL latch set (conn=N)`.
 
 - [ ] 5.A1 Collision during an app **MOVE** hold (B1). Raise into the
       obstruction from the app, keep the finger down ~3 s after the trip,
@@ -204,60 +207,124 @@ must do the same in both cases.
       `FAILSAFE: motors energised with nothing commanding - stopped` line
       during it - ASSERTED, see #48); everything off at ~1.5 s. **The pair
       does not re-energise toward the obstruction at any point while the
-      finger is held.** On release: `BLE: collision latch cleared (stop), K
-      repeats refused` with K ≈ 10 per second held. The new press moves
+      finger is held.** On release: `BLE: start latch (collision) cleared
+      (stop), K repeats refused` with K ≈ 10 per second held. The new press moves
       normally (no 0x06). App: 0x06 for the held button (if it shows result
       codes); Bed Status bit 0 set for ~1.5 s.
 - [ ] 5.A2 Collision during an app **AUTO LEVEL** hold (B2). Obstruct a
       levelling pair, keep holding ~3 s after the trip, release, press again
       (obstruction removed). Observe: trip lines, `BLE: COLLISION_STOP seq=N
       op=0x03 (latched)`, `BLE: hold end op=0x03 ...`, `Once`; LED blink, **no
-      reverse and no motion at all** until the release; `BLE: collision latch
-      cleared (stop), K repeats refused`. The new press starts a fresh
+      reverse and no motion at all** until the release; `BLE: start latch
+      (collision) cleared (stop), K repeats refused`. The new press starts a fresh
       auto-level run (`Step 1` prints).
 - [ ] 5.A3 Release and re-press inside the collision sequence (B3). As 5.A1,
       but release ~0.5 s after the trip, press the **same** button again at
       once, and keep holding ~2 s past the end of the blink. Observe: `BLE:
-      collision latch cleared (stop), K repeats refused` at the release (K
+      start latch (collision) cleared (stop), K repeats refused` at the release (K
       about 4-5); **nothing moves toward the obstruction while the LEDs
       blink** (the reverse at blink 2 may still run, with the `FAILSAFE`
       line); **after the sequence ends the held re-press still starts
       nothing** - its repeats keep getting 0x06 (the refusal latched, DECISIONS
-      #48 as amended by Prompt AG). At the second release: `BLE: collision
-      latch cleared (stop), K repeats refused`, K about 10 per second of the
-      re-press. A fresh press after that moves normally.
-- [ ] 5.A4 STOP_ALL from the **control** phone during the latch (B5). As 5.A1,
-      but while still holding after the trip press the app's STOP (STOP_ALL)
-      - once inside the blink sequence (~0.5 s), once after it (~2 s).
-      App: 0x00 for the STOP_ALL. **Inside the sequence:** `BLE: collision
-      latch cleared (stop_all), K repeats refused` at the STOP_ALL; the held
-      button's next repeat is refused and re-latches, so **nothing moves,
-      during or after the sequence**, until the held button is released
-      (`BLE: collision latch cleared (stop), K repeats refused` then). **After
-      the sequence:** `cleared (stop_all)` at the STOP_ALL, and an app still
-      repeating the held move **starts the move again** on its next repeat
-      (as a STOP_ALL during any ordinary hold; supervision is running).
+      #48 as amended by Prompt AG). At the second release: `BLE: start
+      latch (collision) cleared (stop), K repeats refused`, K about 10 per
+      second of the re-press. A fresh press after that moves normally.
+- [ ] 5.A4 STOP_ALL from the **control** phone during the latch (B5;
+      changed by DECISIONS #49). As 5.A1, but while still holding after the
+      trip press the app's STOP (STOP_ALL) - once inside the blink sequence
+      (~0.5 s), once after it (~2 s). App: 0x00 for the STOP_ALL. Both times:
+      `BLE: STOP_ALL latch set (conn=N), kept as collision` and **no `latch
+      cleared` line at the STOP_ALL**; the held button's repeats keep getting
+      0x06 and **nothing moves, during or after the sequence**, until the held
+      button is released (`BLE: start latch (collision) cleared (stop), K
+      repeats refused` then, K counting every refusal since the trip). A
+      fresh press after that moves normally. (Before #49, a STOP_ALL after the
+      sequence cleared the latch and the next held repeat restarted the move.)
 - [ ] 5.A5 Physical-controller collision unchanged: raise into the obstruction
       from the switch panel with the app connected and idle. No `BLE:
       COLLISION_STOP` line, no Command Result; Bed Status bit 0 set for
       ~1.5 s. Then repeat with an app MOVE press made during the blink and
       held ~2 s past its end: 0x06 for every repeat, **during and after the
       sequence**, nothing starts from the app; on its release `BLE:
-      collision latch cleared (stop), K repeats refused`. A fresh app press
+      start latch (collision) cleared (stop), K repeats refused`. A fresh app press
       after that moves normally. (If the panel is moving the bed when the app
       button is released, the app's MOVE_STOP stops it - #12, unchanged.)
-- [ ] 5.A6 STOP_ALL from the **viewer** phone during the latch (Prompt AG).
-      Second phone connected as VIEWER. As 5.A1 (control phone holding the
-      move into the obstruction); while the control finger stays down, press
-      STOP (STOP_ALL) on the viewer - once inside the blink sequence, once
-      after it. Observe: viewer gets 0x00; **no `latch cleared` line at the
-      viewer's STOP_ALL**; the control phone's held repeats keep getting
-      0x06 and **nothing restarts, during or after the sequence**. On the
-      control release: `BLE: collision latch cleared (stop), K repeats
-      refused`, K counting every refusal since the trip. Optional: after the
-      viewer's STOP_ALL, turn off the control phone's Bluetooth while its
-      finger is still down: expect `BLE: collision latch cleared (silence)`
-      ~300 ms after its last repeat (not `disconnect`), and nothing moves.
+- [ ] 5.A6 STOP_ALL from the **viewer** phone during the latch (Prompt AG;
+      DECISIONS #49). Second phone connected as VIEWER. As 5.A1 (control
+      phone holding the move into the obstruction); while the control finger
+      stays down, press STOP (STOP_ALL) on the viewer - once inside the blink
+      sequence, once after it. Observe: viewer gets 0x00; `BLE: STOP_ALL latch
+      set (conn=V), kept as collision` (V = the viewer's handle) and **no
+      `latch cleared` line at the viewer's STOP_ALL**; the control phone's held
+      repeats keep getting 0x06 and **nothing restarts, during or after the
+      sequence**. On the control release: `BLE: start latch (collision)
+      cleared (stop), K repeats refused`, K counting every refusal since the
+      trip. Optional: after the viewer's STOP_ALL, turn off the control
+      phone's Bluetooth while its finger is still down: expect `BLE: start
+      latch (collision) cleared (silence)` ~300 ms after its last repeat (not
+      `disconnect`), and nothing moves.
+
+## 5b. App STOP latch (DECISIONS #49)
+
+App connected as CONTROL, `BLE_DEBUG_WATCHDOG_LOG` 1, UART logged, no
+obstruction. "STOP" = the app's STOP button (STOP_ALL). Items 5b.1-5b.6 are
+the cases the Prompt AH handoff (b.A.6) works through from code. An app that
+does not yet end its holds on STOP keeps repeating the held button, which is
+the case 5b.1 tests; an app that does (the next app prompt) is 5b.2. **In
+every item: after the STOP nothing moves until the held button is released
+and pressed again.**
+
+- [ ] 5b.1 App holding HEAD up; tap STOP with another finger; keep the HEAD
+      finger down ~2 s; release; press HEAD up again. Observe: the bed stops
+      at the STOP and **stays stopped** while the finger is down; `BLE:
+      STOP_ALL latch set (conn=N)` then `BLE: hold end op=0x01 ...`; App:
+      0x00 for the STOP, 0x07 (STOP_LATCHED) for every held repeat (about 10
+      per second). On release: `BLE: start latch (stop) cleared (stop), K
+      repeats refused`, K about 20 for 2 s. The fresh press moves normally
+      (0x00). (2026-11-02, before #49: the bed restarted on the next repeat -
+      the bench result in DECISIONS #49.)
+- [ ] 5b.2 As 5b.1 with an app that sends MOVE_STOP right after its STOP_ALL
+      and ends the hold. Observe: `STOP_ALL latch set`, then at once `BLE:
+      start latch (stop) cleared (stop), 0 repeats refused`; nothing moves
+      while the finger stays down (the app sends nothing more); a fresh press
+      moves normally. If the app instead keeps repeating after its MOVE_STOP,
+      the next repeat **starts the move** - record it (the firmware cannot tell
+      a repeat after a MOVE_STOP from a new press; Prompt AH handoff f).
+- [ ] 5b.3 Nothing held: (a) tap STOP, press HEAD up within ~0.2 s and hold
+      1 s, release; (b) tap STOP again, wait at least 1 s, press HEAD up.
+      Observe (a): 0x07 for the press and its repeats, nothing moves; at the
+      release `BLE: start latch (stop) cleared (stop), K repeats refused`; a
+      fresh press then moves. (b): `BLE: start latch (stop) cleared (silence),
+      0 repeats refused` about 300 ms after the STOP; the press moves normally
+      (0x00). If (b)'s press is refused with 0x07, record it (Prompt AH
+      handoff f: in a main-loop pass the command is processed before the
+      silence check).
+- [ ] 5b.4 App AUTO LEVEL hold from off-level, tap STOP mid-run, keep
+      holding ~2 s, release, press AUTO LEVEL again. Observe: auto-level stops
+      at the STOP (motors off, red LED off); `STOP_ALL latch set` and `BLE:
+      hold end op=0x03 ...`; 0x07 for every held repeat; **no `Step 1` line
+      while the finger is down** (before #49 the next repeat restarted the run
+      from Step 1); at the release `BLE: start latch (stop) cleared (stop), K
+      repeats refused`; the fresh press starts a new run (`Step 1`). If the
+      bed was LEVELED, no `LEVELED` line at the STOP.
+- [ ] 5b.5 Second phone connected as VIEWER. Control phone holding a move;
+      tap STOP on the viewer. Observe: the bed stops; viewer gets 0x00; `BLE:
+      STOP_ALL latch set (conn=V)`; the control phone gets 0x07 for every held
+      repeat and **nothing restarts**; on the control release `BLE: start
+      latch (stop) cleared (stop), K repeats refused`. Optional: lift the
+      control finger with the control phone's Bluetooth turned off (no stop
+      write reaches the bed): `... cleared (silence)` about 300 ms after its
+      last repeat, nothing moves.
+- [ ] 5b.6 Hold a **physical** move button (e.g. HEAD UP) and tap STOP in the
+      app while still holding it ~2 s; release; press it again. Expected from
+      code: the bed stops at the STOP and **does not restart while the button
+      is still held** (no new press edge, no `SW:` line until the release);
+      App: 0x00; `BLE: STOP_ALL latch set (conn=N)`; at the release an
+      `SW: ... up` line and nothing moves; the next physical press moves
+      normally. Repeat holding the physical AUTO LEVEL button: auto-level
+      stops and does not restart (no `Step 1`) until released and pressed
+      again.
+- [ ] 5b.7 BLE link stays up (no disconnect) through 5b.1-5b.6.
 
 ## 6. Auto-level
 

@@ -2609,3 +2609,96 @@ sequence.
 
 **Status:** builds clean (no warnings) with `BLE_DEBUG_WATCHDOG_LOG` 1 and 0;
 host test unchanged and passes. **Not run on the bench.** REGRESSION 5.A3-5.A6.
+
+## 49. STOP waits for release: a STOP_ALL latches app motion starts (STOP_LATCHED 0x07) until the app releases
+
+Date: 2026-11-03. Reviewer's Prompt AH part A, from Andrew's bench run of
+2026-11-02. **Withdraws the reviewer's ruling on the Prompt AG handoff f.2**
+("a STOP_ALL from the control connection still clears the latch, as now";
+the control phone's STOP_ALL after the collision sequence let a held repeat
+restart the move).
+
+### The bench result
+
+2026-11-02, Andrew, firmware `b848e48`, Galaxy S23 on app `4e66328`, log
+`PuTTY Logs\round3_bench_2026-11-02.log`: holding HEAD up in the app and
+tapping the app's STOP stopped the bed only briefly; the held button's next
+repeat started it again. The firmware had no STOP_ALL print, so the log shows
+each STOP only as a short hold followed at once by a new hold, e.g. lines
+143-145 (`hold end op=0x01 seq=89: 7 refreshes`, then `seq=95: 4 refreshes`,
+`seq=101: 4 refreshes`) and 328-330. Matching those lines to STOP taps rests
+on Andrew's account.
+
+From code (before this entry): STOP_ALL cleared `app_move_active`, so the held
+button's next MOVE_START repeat (every 100 ms) found no move active and called
+`bed_move_start()` + `app_apply_move_outputs()` - a fresh start. An AUTO LEVEL
+hold restarted from Step 1 the same way.
+
+### Decision (user requirement)
+
+**After a STOP the bed stays stopped, and no app motion is accepted until
+every app button has been released.**
+
+- **One app start latch with a reason** (`ble_bed_service.c` only).
+  `app_collision_latched` (#48) became `app_start_latch`: NONE, COLLISION or
+  STOP. COLLISION behaves exactly as #48 + its Prompt AG amendment.
+- **One helper sets it**, `latch_app_starts(reason)`, which also calls
+  `note_app_commanding()` (Prompt AG handoff f.6, folded in). It never
+  downgrades COLLISION to STOP. Callers - the only places the latch is set:
+  the collision trip in `service_move_watchdog()` (COLLISION), STOP_ALL
+  (STOP), and the start refusal in `process_pending_command()` (re-asserts the
+  current reason; COLLISION when only `any_collision` refused it). So the
+  latch is never set without the silence timeout running (Prompt AG b.3).
+- **Any STOP_ALL, from the control connection or a viewer, sets the latch with
+  reason STOP**, after its existing stop actions and its 0x00 result. If the
+  latch is already COLLISION it stays COLLISION. **STOP_ALL no longer clears
+  the latch from either role.** Everything else STOP_ALL does is unchanged:
+  accepted from any role (#12), the watchdog cancelled, both app flags
+  cleared, the app's half of the #36 latch released
+  (`bed_note_source_released(BED_SOURCE_APP)`, now called directly for both
+  roles), `app_stop_all()`, 0x00 to the sender.
+- **While latched with reason STOP**, every MOVE_START / AUTO_LEVEL_START from
+  the control connection is refused with the new Command Result **0x07
+  STOP_LATCHED** (its own seq): it starts nothing, arms no watchdog, does not
+  update `last_move_seq`, and restarts the silence timeout. Reason COLLISION
+  still answers 0x06. The `|| any_collision` term is unchanged: with no latch
+  set, a start during any collision sequence is refused 0x06 and latches
+  COLLISION. With the stop latch set, a start is answered 0x07 even during a
+  collision sequence (the STOP check comes first).
+- **The latch clears only through `note_app_stopped_commanding()`**: MOVE_STOP,
+  AUTO_LEVEL_STOP, the control-phone disconnect stop, and the silence timeout
+  (300 ms after the app's last start, refusal or STOP_ALL). The watchdog
+  expiry also calls it, but cannot run while latched. STOP_ALL is no longer a
+  caller.
+- Bench prints behind `BLE_DEBUG_WATCHDOG_LOG`, main-loop context, after the
+  stop and the result: `BLE: STOP_ALL latch set (conn=N)` at every STOP_ALL
+  (with `, kept as collision` appended when the latch was already COLLISION);
+  the "latch cleared" line now names the reason it was set:
+  `BLE: start latch (stop|collision) cleared (stop|disconnect|silence), K
+  repeats refused` (it was `BLE: collision latch cleared (...)`). K counts
+  0x06 and 0x07 refusals since the app last released.
+- Additive within protocol v1 (BLE_GATT_DESIGN §7 row 0x07); the Protocol
+  Version is unchanged. No GATT, `config/` or `autogen/` change.
+
+### Why STOP_ALL no longer clears the latch
+
+A STOP_ALL is not a release. The user can tap STOP with one finger while
+another is still on a held button, and the app keeps repeating that button's
+start; the only evidence that the buttons are released is a stop write for the
+hold, the phone going away, or the repeats ending. Clearing the latch at the
+STOP_ALL is what let the held repeat restart the bed - after an ordinary hold
+(the bench result) and after a collision (Prompt AG f.2, now withdrawn). The
+viewer case was already handled this way for the collision latch (Prompt AG
+f.1); it now holds for both roles and both reasons.
+
+The app side - STOP ends every hold in the app - comes in a separate app
+prompt. The firmware does not rely on it.
+
+### Status
+
+Builds clean (no warnings) with `BLE_DEBUG_WATCHDOG_LOG` 1 and 0; the host
+test (`test/bed_control_test.c`) is unchanged and passes (it compiles
+bed_control.c only and cannot reach this code). **Not run on the bench.**
+REGRESSION §5 (5.A1-5.A6 updated) and §5b (new). What happens in each case,
+and the open points, are in the Prompt AH handoff
+(`fw_HANDOFF_2026-11-03_01_...`, b.A).
