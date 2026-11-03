@@ -268,12 +268,22 @@ ends successfully. "Successfully" is any of:
 - any motion starts - a single-side move, an ALL move, a new auto-level run
   (either source), or the collision sequence's reverse;
 - a collision trips (summed rise or max load), in the same pass as the trip;
-- settings mode is entered.
+- settings mode is entered;
+- **the bed is tilted off level while idle** (added 2026-11-03, Prompt AI
+  part D, DECISIONS #46 amendment): with a phone subscribed and the idle tilt
+  sampler running (§6 table above), once its filter has run 1.5 s since the
+  idle window opened, the filtered roll or pitch is more than **0.3°** from
+  the level baseline **continuously for 2 s**. A brief bump that comes back
+  inside 0.3° restarts the 2 s. Both numbers are bench-tunable
+  (`LEVELED_EXIT_BAND`, `LEVELED_EXIT_HOLD_MS`). With no phone subscribed
+  nothing is sampled, so this cannot happen then.
 
 Nothing else clears it. In particular it **stays set** while the user keeps
 holding AUTO LEVEL after the run succeeded, and after the release, and
 through STOP / STOP_ALL, a watchdog stop or a disconnect stop - none of those
-moves the bed. It is 0 at boot.
+moves the bed. It is 0 at boot. **It is never set from tilt**: only a
+successful auto-level run sets it, so a bed that happens to sit within 0.3°
+does not read as "levelled".
 
 **App use:** "levelled - you can let go" while AUTO LEVEL is still held
 (`command` still reads AUTO_LEVEL until release), and "bed is level" on the

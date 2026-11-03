@@ -2385,6 +2385,27 @@ The text above is left as written and is superseded where it says otherwise.
    would silently go wrong if the firmware constant changed, the bit gives
    the exact start and end. Additive within protocol v1 (BLE_GATT_DESIGN §6);
    no Protocol Version change. Builds clean; not run on the bench.
+2. **LEVELED (bit 4) clears itself when the bed is tilted off level while
+   idle (Prompt AI part D).** A new "cleared when": with a phone subscribed
+   and the idle tilt sampler running (DECISIONS #50), once its filter has run
+   `3 x TILT_IDLE_TAU_MS` (1500 ms) since the idle window opened, the filtered
+   roll or pitch is outside `LEVELED_EXIT_BAND` (0.3°, scaled 30) continuously
+   for `LEVELED_EXIT_HOLD_MS` (2000 ms) - evaluated on every idle sample, the
+   hold restarting whenever a sample is back inside the band
+   (`tilt_idle_leveled_exit_sample()`, `auto_level.c`). Then `app.c` calls
+   `app_set_leveled(false)` right after `tilt_telemetry_tick()`; it prints
+   `LEVELED (Bed Status bit 4) -> 0` once and the change is notified at once
+   (byte 0). **Bit 4 is still never SET from tilt**: it sets only at a
+   successful auto-level end, as above. No IN_LEVEL_BAND bit. **Why:** "Level
+   reached" on the app must not stay up after the bed has been tilted by hand
+   or moved by someone getting in; 0.3° is auto-level's pulse threshold
+   (three times the 0.1° "no levelling needed" band, so it cannot flicker
+   against a just-levelled bed), 2 s rejects a person sitting down. Both
+   numbers are to be tuned on the bench from the `TILT idle` noise lines (#50):
+   the band should stay well above the peak-to-peak at rest. Nothing samples
+   with no phone subscribed, so the bit cannot clear then; it is re-judged
+   1.5 s after the next idle window opens. A REFRESH_TILT or any burst closes
+   the idle window and restarts the 1.5 s. Builds clean; not run on the bench.
 
 ## 47. BED LIGHTS toggles the lights on the release of a short press
 

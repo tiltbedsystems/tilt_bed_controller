@@ -834,6 +834,13 @@ void app_process_action(void)
   tilt_telemetry_tick(ble_bed_service_status_subscribed(),
                       auto_level_active || in_settings_mode);
 
+  // LEVELED (Bed Status bit 4) clears itself when the idle tilt has left the
+  // level band for long enough (Prompt AI part D). Clear only - bit 4 is set
+  // only by a successful auto-level (#46). Idempotent: prints once.
+  if (tilt_idle_leveled_exit_due()) {
+    app_set_leveled(false);
+  }
+
   bed_control_tick();
   ble_bed_service_tick();
 

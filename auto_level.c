@@ -73,6 +73,14 @@
 #define TILT_IDLE_DIAG 1
 #define TILT_IDLE_DIAG_PERIOD_MS 10000
 
+// LEVELED (Bed Status bit 4) clears itself (Prompt AI part D, DECISIONS #46
+// amendment): when the idle filtered tilt is outside LEVELED_EXIT_BAND on roll
+// or pitch continuously for LEVELED_EXIT_HOLD_MS, judged only once the idle
+// filter has run TILT_IDLE_CONVERGED_MS since its window opened. Never SETS
+// the bit. Both bench-tunable from TILT_IDLE_DIAG's noise lines.
+#define LEVELED_EXIT_BAND 0.3       // degrees
+#define LEVELED_EXIT_HOLD_MS 2000
+
 #define NUM_ACCEL_READINGS 130 // Number of accelerometer samples to average
 #define TOLERANCE 0.01 // Tolerance auto-level code reaches before determining bed is level
 #define CLOSE_TOLERANCE 0.1 // Auto-level won't begin leveling if within this tolerance
@@ -100,6 +108,7 @@ int32_t accel_vector_mag = 0; // Magnitude of acceleration vector
 int16_t tolerance = TOLERANCE * SCALE_FACTOR;  // Tolerance in degrees * SCALE FACTOR for determining levelness
 int16_t close_tolerance = CLOSE_TOLERANCE * SCALE_FACTOR; // Tolerance of beginning sneak leveling to adjust slowly
 int16_t pulse_start_tolerance = PULSE_START_TOLERANCE * SCALE_FACTOR;
+static const int16_t leveled_exit_band = LEVELED_EXIT_BAND * SCALE_FACTOR; // 30
 
 float latest_roll_angle = 0.0; // X-Z angle, deviation from the baseline_roll_angle
 float latest_pitch_angle = 0.0; // Y-Z angle, deviation from the baseline_pitch_angle
@@ -516,6 +525,9 @@ static int16_t  tilt_idle_roll_out = 0;
 static int16_t  tilt_idle_pitch_out = 0;
 static uint32_t tilt_idle_open_tick = 0;
 static uint32_t tilt_idle_last_sample_tick = 0;
+static bool     tilt_idle_out_of_band = false;   // LEVELED exit: outside the band since out_since
+static uint32_t tilt_idle_out_since_tick = 0;
+static bool     tilt_idle_leveled_exit = false;  // outside the band for LEVELED_EXIT_HOLD_MS
 
 #if TILT_IDLE_DIAG && !BED_CAPTURE_MOTOR_CURRENTS
 static bool     tilt_diag_running = false;
@@ -542,6 +554,8 @@ static void tilt_idle_open_window(bool seed_from_perpass)
   uint32_t now = sl_sleeptimer_get_tick_count();
   tilt_idle_open = true;
   tilt_idle_open_tick = now;
+  tilt_idle_out_of_band = false;
+  tilt_idle_leveled_exit = false;
   if (seed_from_perpass) {
     tilt_idle_roll  = (float)telemetry_filter.baseline_roll;
     tilt_idle_pitch = (float)telemetry_filter.baseline_pitch;
@@ -571,9 +585,32 @@ static void tilt_idle_close(void)
   tilt_idle_open = false;
   tilt_idle_have_value = false;
   tilt_idle_sample_due = false;
+  tilt_idle_out_of_band = false;
+  tilt_idle_leveled_exit = false;
 #if TILT_IDLE_DIAG && !BED_CAPTURE_MOTOR_CURRENTS
   tilt_diag_running = false; // a partial period is discarded
 #endif
+}
+
+// LEVELED exit (Prompt AI part D), one evaluation per idle sample on the
+// converged filter output. "Continuously": the hold restarts whenever a
+// sample is back inside the band. Milliseconds, not sample counts (#2).
+static void tilt_idle_leveled_exit_sample(uint32_t now)
+{
+  bool outside = (abs(tilt_idle_roll_out) > leveled_exit_band)
+                 || (abs(tilt_idle_pitch_out) > leveled_exit_band);
+  if (!outside) {
+    tilt_idle_out_of_band = false;
+    tilt_idle_leveled_exit = false;
+    return;
+  }
+  if (!tilt_idle_out_of_band) {
+    tilt_idle_out_of_band = true;
+    tilt_idle_out_since_tick = now;
+  }
+  if (sl_sleeptimer_tick_to_ms(now - tilt_idle_out_since_tick) >= LEVELED_EXIT_HOLD_MS) {
+    tilt_idle_leveled_exit = true;
+  }
 }
 
 #if TILT_IDLE_DIAG && !BED_CAPTURE_MOTOR_CURRENTS
@@ -633,9 +670,10 @@ static void tilt_idle_sample(void)
   tilt_idle_roll_out  = round_to_int16(tilt_idle_roll);
   tilt_idle_pitch_out = round_to_int16(tilt_idle_pitch);
 
-  // Statistics only on a converged value: TILT_IDLE_CONVERGED_MS after the
-  // window opened.
+  // The LEVELED exit and the statistics only on a converged value:
+  // TILT_IDLE_CONVERGED_MS after the window opened.
   if (sl_sleeptimer_tick_to_ms(now - tilt_idle_open_tick) >= TILT_IDLE_CONVERGED_MS) {
+    tilt_idle_leveled_exit_sample(now);
 #if TILT_IDLE_DIAG && !BED_CAPTURE_MOTOR_CURRENTS
     tilt_idle_diag_sample(now);
 #endif
@@ -655,6 +693,11 @@ int16_t tilt_idle_roll_scaled(void)
 int16_t tilt_idle_pitch_scaled(void)
 {
   return tilt_idle_pitch_out;
+}
+
+bool tilt_idle_leveled_exit_due(void)
+{
+  return tilt_idle_open && tilt_idle_leveled_exit;
 }
 
 bool tilt_idle_fresh(void)

@@ -119,5 +119,11 @@ int16_t tilt_idle_pitch_scaled(void);
 // than TILT_IDLE_FRESH_MS (300 ms).
 bool tilt_idle_fresh(void);
 
+// LEVELED exit (Prompt AI part D): true while the idle window is open, its
+// filter has run TILT_IDLE_CONVERGED_MS, and the filtered roll or pitch has
+// been outside LEVELED_EXIT_BAND (0.3 deg) continuously for
+// LEVELED_EXIT_HOLD_MS (2000 ms). app.c then calls app_set_leveled(false).
+bool tilt_idle_leveled_exit_due(void);
+
 
 #endif /* AUTO_LEVEL_H_ */
