@@ -1765,3 +1765,51 @@ Prompt Y rulings record above.
 - ...that offsets 4-7 at rest are the last burst's value: with a phone subscribed they are the idle chain's, which uses a different (time-constant) filter from the moving and auto-level chains. F15 is still open for those two.
 - ...that the `TILT idle` p2p numbers are noise of the sensor alone: they are the filtered output at τ = 500 ms on that bed, in that place, valid only with that τ.
 - ...that the Berkeley `bss` column measures static RAM: it includes `.stack` and `.memory_manager_heap`, which absorbs `.bss` growth; it cannot change. The `.bss` section is 12,000 B at the end; its baseline was not measured.
+
+## 2026-11-03 — Prompt AK: Prompt AI follow-ups (top-of-tick silence check only when no hold is armed; conn= on the no-latch STOP_ALL print)
+
+**Commits**
+
+- `3fc2e98` — A1: `ble_bed_service_tick()` begins `if (!move_watchdog_armed) service_app_commanding();` (`ble_bed_service.c:1181-1183`); the call after `service_move_watchdog()` is unchanged (`:1202`). A2: `BLE: STOP_ALL (no app hold, no latch) (conn=N)` (`:783`). B1: DECISIONS #49 "Amended by Prompt AK". B2: PRE_SHIP F31. Prompt AK file committed.
+- The handoff `docs/handoffs/fw_HANDOFF_2026-11-03_03_ai-followups.md` and this entry are committed together after `3fc2e98`, then pushed.
+
+**Rulings recorded (Prompt AK B3, on the Prompt AI handoff QUESTIONS)**
+
+- f.1 fixed - the top-of-tick call is conditional on the watchdog not being armed (A1, `3fc2e98`).
+- f.2 confirmed - bursts are not part of the idle sampler; they count for the 5 Hz cadence.
+- f.3 accepted - seed from the per-pass chain only if it ran in the pass before.
+- f.4 intended - a clean release with a stop write clears `app_commanding` at once.
+- f.5 confirmed - `tilt_fresh` = 1 while the shipped chain updated this pass, including auto-level and the settings capture.
+- f.6 keep - the 10 s TILT lines start after convergence.
+- f.7 PRE_SHIP row - F31 (B2, `3fc2e98`).
+- f.8 leave until F15 (the idle -> per-pass step).
+- f.9 done - `(conn=N)` on the no-latch print (A2, `3fc2e98`).
+- f.10 accepted - bit 5's two extra guards.
+- f.11 fine (docs beyond the parts' lists).
+
+**VERIFIED**
+
+- Start state: HEAD `08afb33` = `origin/main` after `git fetch`; `.projectlinkstore` modified (not committed), the prompt untracked, nothing else.
+- Builds from the CLI, every one exit 0 with no warning/error line. Baseline (`08afb33`'s `ble_bed_service.c`) 248,540 / 788 / 72,472 at `BLE_DEBUG_WATCHDOG_LOG` 1 and 246,652 / 780 / 72,480 at 0. Prompt AK: 248,548 / 788 / 72,472 at 1 (+8 B text), 246,652 / 780 / 72,480 at 0 (+0 B total; `ble_bed_service_tick` grew 0x3f8 -> 0x400 by `nm -S`, absorbed by alignment). Flag restored to 1; rebuilt after the last comment edit: 248,548.
+- The flag-0 disassembly of `ble_bed_service_tick` starts with a load of `move_watchdog_armed`, `cbnz` over the `bl service_app_commanding` (the baseline calls it unconditionally).
+- Host test `0 check(s) failed`. `BED_BENCH_PROVOKE_RUNAWAY` 0, `BLE_BENCH_WIPE_BONDS` 0, `BLE_DEBUG_WATCHDOG_LOG` 1. No `config/`, `autogen/`, `bed_control.c` or GATT change.
+- From code (lines read): every `move_watchdog_arm()` (`:942`, `:982`) follows a `note_app_commanding()` in the same command (`:915`, `:966`); the only clear of `any_collision` is `app.c:678`; a start latch is set only by `latch_app_starts()` (`:662`, `:775`, `:874`, `:877`).
+
+**ASSERTED-but-untested** (nothing ran on a bed)
+
+- A1 closes Prompt AI's item-5 window, and keeps A2's purpose (at the start of a tick a set latch implies the watchdog is not armed). The cases that differ from `08afb33` (all in the first pass after the deadline of an armed hold): a STOP_ALL there now latches; a start there while the #36 inhibit is set from an earlier switch conflict is refused 0x01 and the watchdog stop follows; a collision there keeps the app's half of #36 until the collision latch releases; the item-5 repeat continues with the app still commanding. Every other case is the same. Full analysis in the handoff b.1.
+- A residual, narrower window remains through the unchanged later call (it existed before Prompt AI too): reported in the handoff QUESTIONS f.1, not changed.
+- The console lines in the handoff b.3 for the three bench cases.
+
+**Open**
+
+- Bench: the Prompt AI list (REGRESSION 1.R, §5b incl. 5b.3d and 5b.8, 6.11, §6b) is still owed; the three STOP cases in the handoff b.3 now print `(conn=N)` on the no-latch line.
+- Handoff QUESTIONS: the residual #36 window via the later `service_app_commanding()` call (proposal: guard that call the same way, or put the guard inside the function); REGRESSION 5b.3 / 5b.5 / 5b.6 and DECISIONS #49's AI amendment still quote the no-latch line without `(conn=N)` (a prefix of the new line; not edited - not asked).
+- PRE_SHIP F31 new (owner Andrew + Claude).
+
+**The next session must NOT assume**
+
+- ...that any of this ran on a bed: built, not run.
+- ...that the top-of-tick silence check always runs: since Prompt AK only when no app hold is armed. DECISIONS #49's Prompt AI amendment item 2 is superseded on that point by its Prompt AK amendment.
+- ...that the #36 "app released in bed_control while the hold continues" case is fully gone: the item-5 path is closed; a narrower path through the later call is still open (handoff f.1).
+- ...that the +0 B size at `BLE_DEBUG_WATCHDOG_LOG` 0 means no code changed: the function grew 8 B inside alignment padding.
