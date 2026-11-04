@@ -2896,6 +2896,30 @@ change.
 host test unchanged. **Not run on the bench.** REGRESSION §5b updated.
 What each AH A6 case does now is in the Prompt AI handoff.
 
+### Amended by Prompt AK (2026-11-03)
+
+Reviewer's ruling on the Prompt AI handoff QUESTIONS f.1: the top-of-tick
+silence check (Prompt AI item 2 above) now runs only when no app hold is armed
+- `if (!move_watchdog_armed) service_app_commanding();` (`ble_bed_service.c:1181-1183`);
+the call after `service_move_watchdog()` is unchanged (`:1202`). While a hold
+is armed the dead-man watchdog is the 300 ms judge and does the release and
+the stop itself; judging silence first is what opened Prompt AI's "one new
+case, narrow" (a late repeat of an accepted hold continuing the move with
+`source_commanding[APP]` already false in bed_control). That case is closed:
+the repeat is processed with the app still commanding, as before Prompt AI.
+Prompt AI's purpose is kept: at the start of every tick a set start latch
+means the watchdog is not armed, so latched releases are still judged before
+the next command. Other cases that change are in the same pass only (the
+first pass after the deadline of an armed hold): a STOP_ALL there latches
+(STOP) instead of not latching; a start there while the #36 inhibit is set
+from an earlier switch conflict is refused 0x01 and the watchdog stop follows,
+instead of starting at once; a collision there keeps the app's half of #36
+until the collision latch releases. The full list, and a narrower window that
+the unchanged later call still leaves, are in the Prompt AK handoff. Also (AK
+A2): the debug line is now `BLE: STOP_ALL (no app hold, no latch) (conn=N)`.
+**Status:** builds clean with `BLE_DEBUG_WATCHDOG_LOG` 1 and 0; host test
+unchanged. **Not run on the bench.**
+
 ## 50. Live idle tilt: a 10 Hz idle sampler with its own millisecond filter, 5 Hz idle notify, `tilt_fresh` live
 
 Date: 2026-11-03. Reviewer's Prompt AI part C (Option B of the Prompt AH

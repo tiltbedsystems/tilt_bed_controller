@@ -780,7 +780,7 @@ static void process_pending_command(void)
       printf("BLE: STOP_ALL latch set (conn=%u)%s\r\n", conn,
              (app_start_latch == APP_LATCH_COLLISION) ? ", kept as collision" : "");
     } else {
-      printf("BLE: STOP_ALL (no app hold, no latch)\r\n");
+      printf("BLE: STOP_ALL (no app hold, no latch) (conn=%u)\r\n", conn);
     }
 #endif
   }
@@ -1171,7 +1171,16 @@ void ble_bed_service_tick(void)
   // since the app's last start" is decided at the moment the next command is
   // processed - not only if some earlier pass happened to run after the
   // deadline. Also run after the commands below, as before.
-  service_app_commanding();
+  //
+  // Not while an app hold is armed (Prompt AK A1): the watchdog is the
+  // MOVE_WATCHDOG_MS judge then, and does the release and the stop itself.
+  // Judging silence here first would let a late repeat of that hold continue
+  // the move with the app already released in bed_control (#36). At the start
+  // of a tick a set start latch means the watchdog is not armed, so latched
+  // releases are still judged before the next command.
+  if (!move_watchdog_armed) {
+    service_app_commanding();
+  }
 
   // Control link dropped mid-command (BLE_GATT_DESIGN.md #5). Deferred out
   // of the disconnect callback; done here, first, before anything else.
